@@ -2,3 +2,5 @@
 build/
 outputs/
 cmake-build-*/
+__pycache__/
+*.pyc
