@@ -36,12 +36,24 @@ static bool parseArgs(int argc, char** argv, RenderOptions& cfg) {
             const char* value = requireValue("--scene");
             if (!value) return false;
             cfg.scene = value;
+        } else if (arg == "--firefly-clamp") {
+            const char* value = requireValue("--firefly-clamp");
+            if (!value) return false;
+            cfg.firefly_clamp = std::stof(value);
+        } else if (arg == "--denoise-strength") {
+            const char* value = requireValue("--denoise-strength");
+            if (!value) return false;
+            cfg.denoise_strength = std::stof(value);
+        } else if (arg == "--no-denoise") {
+            cfg.denoise = false;
+        } else if (arg == "--save-guide-buffers") {
+            cfg.save_guide_buffers = true;
         } else if (arg == "--print-options-schema") {
             cfg.print_options_schema = true;
         } else if (arg == "--print-scene-registry") {
             cfg.print_scene_registry = true;
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: sr_rt_gpu [--scene name] [--width N] [--height N] [--spp N] [--output path] [--print-options-schema] [--print-scene-registry]\n";
+            std::cout << "Usage: sr_rt_gpu [--scene name] [--width N] [--height N] [--spp N] [--output path] [--firefly-clamp V] [--denoise-strength V] [--no-denoise] [--save-guide-buffers] [--print-options-schema] [--print-scene-registry]\n";
             return false;
         } else {
             std::cerr << "Unknown argument: " << arg << "\n";
@@ -80,6 +92,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::cout << "Wrote " << cfg.output << " (" << cfg.width << "x" << cfg.height << ", spp=" << cfg.spp << ") using scene '" << scene.name << "'\n";
+    std::cout << "Wrote " << cfg.output << " (" << cfg.width << "x" << cfg.height << ", spp=" << cfg.spp << ") using scene '" << scene.name << "'";
+    if (cfg.denoise) {
+        std::cout << " with denoise_strength=" << cfg.denoise_strength;
+    } else {
+        std::cout << " with denoising disabled";
+    }
+    std::cout << " and firefly_clamp=" << cfg.firefly_clamp << "\n";
     return 0;
 }

@@ -19,7 +19,8 @@ struct RenderUniforms {
     uint sampleIndex;
     float time;
     float lightAngularRadius;
-    float3 pad0;
+    float fireflyClamp;
+    float2 pad0;
 };
 
 struct CameraData {
@@ -727,7 +728,12 @@ kernel void renderScene(device float4* outAccum [[buffer(0)]],
         ? shade_hit(hit, rd, spheres, uniforms.sphereCount, planes, uniforms.planeCount, triangles, uniforms.triangleCount, uniforms, rng)
         : sky_color(rd);
 
-    color = min(max(color, 0.0f), float3(8.0f));
+    color = max(color, 0.0f);
+    float luminance = dot(color, float3(0.2126f, 0.7152f, 0.0722f));
+    if (uniforms.fireflyClamp > 0.0f && luminance > uniforms.fireflyClamp) {
+        color *= uniforms.fireflyClamp / luminance;
+    }
+    color = min(color, float3(8.0f));
     uint idx = gid.y * uniforms.width + gid.x;
     outAccum[idx] += float4(color, 1.0f);
 

@@ -41,6 +41,38 @@ bool writePPM(const fs::path& outputPath, uint32_t width, uint32_t height, const
     return static_cast<bool>(out);
 }
 
+std::vector<uint8_t> encodeRGB(const std::vector<simd_float3>& image, bool tonemap) {
+    std::vector<uint8_t> rgb(image.size() * 3);
+    for (size_t i = 0; i < image.size(); ++i) {
+        float r = image[i].x;
+        float g = image[i].y;
+        float b = image[i].z;
+
+        if (tonemap) {
+            r = r / (1.0f + r);
+            g = g / (1.0f + g);
+            b = b / (1.0f + b);
+            r = std::sqrt(std::max(0.0f, r));
+            g = std::sqrt(std::max(0.0f, g));
+            b = std::sqrt(std::max(0.0f, b));
+        }
+
+        r = std::clamp(r, 0.0f, 1.0f);
+        g = std::clamp(g, 0.0f, 1.0f);
+        b = std::clamp(b, 0.0f, 1.0f);
+        rgb[i * 3 + 0] = static_cast<uint8_t>(r * 255.0f);
+        rgb[i * 3 + 1] = static_cast<uint8_t>(g * 255.0f);
+        rgb[i * 3 + 2] = static_cast<uint8_t>(b * 255.0f);
+    }
+    return rgb;
+}
+
+fs::path sidecarPathFor(const fs::path& outputPath, const std::string& suffix) {
+    fs::path stem = outputPath;
+    stem.replace_extension();
+    return stem.string() + suffix + outputPath.extension().string();
+}
+
 fs::path shaderPathForBinary() {
     char pathbuf[4096];
     uint32_t size = sizeof(pathbuf);
@@ -66,13 +98,17 @@ id<MTLBuffer> makeSceneBuffer(id<MTLDevice> device, const std::vector<T>& values
 std::vector<simd_float3> denoiseBeauty(const std::vector<simd_float3>& beauty,
                                        const std::vector<GuidePixel>& guides,
                                        uint32_t width,
-                                       uint32_t height) {
+                                       uint32_t height,
+                                       float strength) {
+    if (strength <= 0.0f) {
+        return beauty;
+    }
     std::vector<simd_float3> filtered(beauty.size(), simd_make_float3(0.0f, 0.0f, 0.0f));
     const int radius = 2;
     const float spatialSigma = 1.6f;
-    const float colorSigma = 0.45f;
-    const float albedoSigma = 0.30f;
-    const float normalSigma = 0.18f;
+    const float colorSigma = std::max(0.08f, 0.45f * strength);
+    const float albedoSigma = std::max(0.06f, 0.30f * strength);
+    const float normalSigma = std::max(0.04f, 0.18f * strength);
 
     for (uint32_t y = 0; y < height; ++y) {
         for (uint32_t x = 0; x < width; ++x) {
@@ -198,7 +234,8 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
                 sample,
                 0.0f,
                 0.035f,
-                simd_make_float3(0.0f, 0.0f, 0.0f),
+                options.firefly_clamp,
+                simd_make_float2(0.0f, 0.0f),
             };
 
             id<MTLBuffer> uniformBuffer = [device newBufferWithBytes:&uniforms length:sizeof(RenderUniforms) options:MTLResourceStorageModeShared];
@@ -238,31 +275,29 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
             guides[i].albedo = albedo;
         }
 
-        std::vector<simd_float3> denoised = denoiseBeauty(beauty, guides, options.width, options.height);
-        std::vector<uint8_t> rgb(pixelCount * 3);
-        for (size_t i = 0; i < pixelCount; ++i) {
-            float r = denoised[i].x;
-            float g = denoised[i].y;
-            float b = denoised[i].z;
+        std::vector<simd_float3> finalBeauty = options.denoise
+            ? denoiseBeauty(beauty, guides, options.width, options.height, options.denoise_strength)
+            : beauty;
 
-            r = r / (1.0f + r);
-            g = g / (1.0f + g);
-            b = b / (1.0f + b);
+        if (options.save_guide_buffers) {
+            std::vector<simd_float3> normalImage(pixelCount);
+            std::vector<simd_float3> albedoImage(pixelCount);
+            for (size_t i = 0; i < pixelCount; ++i) {
+                normalImage[i] = guides[i].normal * 0.5f + simd_make_float3(0.5f, 0.5f, 0.5f);
+                albedoImage[i] = guides[i].albedo;
+            }
 
-            r = std::sqrt(std::max(0.0f, r));
-            g = std::sqrt(std::max(0.0f, g));
-            b = std::sqrt(std::max(0.0f, b));
-
-            r = std::clamp(r, 0.0f, 1.0f);
-            g = std::clamp(g, 0.0f, 1.0f);
-            b = std::clamp(b, 0.0f, 1.0f);
-
-            rgb[i * 3 + 0] = static_cast<uint8_t>(r * 255.0f);
-            rgb[i * 3 + 1] = static_cast<uint8_t>(g * 255.0f);
-            rgb[i * 3 + 2] = static_cast<uint8_t>(b * 255.0f);
+            if (!writePPM(sidecarPathFor(options.output, "_normal"), options.width, options.height, encodeRGB(normalImage, false))) {
+                if (error_message) *error_message = "Failed to write normal guide image.";
+                return false;
+            }
+            if (!writePPM(sidecarPathFor(options.output, "_albedo"), options.width, options.height, encodeRGB(albedoImage, false))) {
+                if (error_message) *error_message = "Failed to write albedo guide image.";
+                return false;
+            }
         }
 
-        if (!writePPM(options.output, options.width, options.height, rgb)) {
+        if (!writePPM(options.output, options.width, options.height, encodeRGB(finalBeauty, true))) {
             if (error_message) *error_message = "Failed to write output image.";
             return false;
         }
