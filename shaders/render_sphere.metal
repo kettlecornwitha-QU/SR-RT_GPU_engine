@@ -1,6 +1,10 @@
 #include <metal_stdlib>
 using namespace metal;
 
+constant uint MATERIAL_LAMBERTIAN = 0;
+constant uint MATERIAL_METAL = 1;
+constant uint MATERIAL_EMISSIVE = 2;
+
 struct RenderUniforms {
     uint width;
     uint height;
@@ -29,6 +33,9 @@ struct SphereData {
     float radius;
     float3 albedo;
     float roughness;
+    uint materialType;
+    float emissionStrength;
+    float2 pad0;
 };
 
 struct PlaneData {
@@ -37,7 +44,10 @@ struct PlaneData {
     float3 albedoA;
     float checkerScale;
     float3 albedoB;
-    float pad0;
+    float roughness;
+    uint materialType;
+    float emissionStrength;
+    float2 pad0;
 };
 
 struct TriangleData {
@@ -49,6 +59,9 @@ struct TriangleData {
     float pad2;
     float3 albedo;
     float roughness;
+    uint materialType;
+    float emissionStrength;
+    float2 pad3;
 };
 
 struct HitInfo {
@@ -56,8 +69,22 @@ struct HitInfo {
     float3 position;
     float3 normal;
     float3 albedo;
+    float roughness;
+    uint materialType;
+    float emissionStrength;
     bool hit;
 };
+
+static inline void init_hit(thread HitInfo& hit) {
+    hit.t = 0.0f;
+    hit.position = float3(0.0f);
+    hit.normal = float3(0.0f);
+    hit.albedo = float3(0.0f);
+    hit.roughness = 0.5f;
+    hit.materialType = MATERIAL_LAMBERTIAN;
+    hit.emissionStrength = 0.0f;
+    hit.hit = false;
+}
 
 static inline bool intersect_sphere(float3 ro, float3 rd, constant SphereData& sphere, thread HitInfo& hit) {
     float3 oc = ro - sphere.center;
@@ -77,6 +104,9 @@ static inline bool intersect_sphere(float3 ro, float3 rd, constant SphereData& s
         hit.position = ro + rd * t;
         hit.normal = normalize(hit.position - sphere.center);
         hit.albedo = sphere.albedo;
+        hit.roughness = sphere.roughness;
+        hit.materialType = sphere.materialType;
+        hit.emissionStrength = sphere.emissionStrength;
     }
     return true;
 }
@@ -95,6 +125,9 @@ static inline bool intersect_plane(float3 ro, float3 rd, constant PlaneData& pla
         hit.position = p;
         hit.normal = plane.normal;
         hit.albedo = useA ? plane.albedoA : plane.albedoB;
+        hit.roughness = plane.roughness;
+        hit.materialType = plane.materialType;
+        hit.emissionStrength = plane.emissionStrength;
     }
     return true;
 }
@@ -121,8 +154,67 @@ static inline bool intersect_triangle(float3 ro, float3 rd, constant TriangleDat
         hit.position = ro + rd * t;
         hit.normal = normalize(cross(e1, e2));
         hit.albedo = tri.albedo;
+        hit.roughness = tri.roughness;
+        hit.materialType = tri.materialType;
+        hit.emissionStrength = tri.emissionStrength;
     }
     return true;
+}
+
+static inline bool any_occluder(float3 ro, float3 rd,
+                                constant SphereData* spheres, uint sphereCount,
+                                constant PlaneData* planes, uint planeCount,
+                                constant TriangleData* triangles, uint triangleCount,
+                                float maxDistance) {
+    HitInfo hit;
+    init_hit(hit);
+    for (uint i = 0; i < sphereCount; ++i) {
+        intersect_sphere(ro, rd, spheres[i], hit);
+        if (hit.hit && hit.t < maxDistance) return true;
+    }
+    for (uint i = 0; i < planeCount; ++i) {
+        intersect_plane(ro, rd, planes[i], hit);
+        if (hit.hit && hit.t < maxDistance) return true;
+    }
+    for (uint i = 0; i < triangleCount; ++i) {
+        intersect_triangle(ro, rd, triangles[i], hit);
+        if (hit.hit && hit.t < maxDistance) return true;
+    }
+    return false;
+}
+
+static inline float3 shade_hit(thread const HitInfo& hit,
+                               float3 ro,
+                               float3 rd,
+                               constant SphereData* spheres, uint sphereCount,
+                               constant PlaneData* planes, uint planeCount,
+                               constant TriangleData* triangles, uint triangleCount) {
+    if (hit.materialType == MATERIAL_EMISSIVE) {
+        return hit.albedo * hit.emissionStrength;
+    }
+
+    float3 lightDir = normalize(float3(-0.6f, 0.9f, -0.4f));
+    float3 toLight = lightDir;
+    float shadowDistance = 1e6f;
+    float3 shadowOrigin = hit.position + hit.normal * 1e-3f;
+    bool shadowed = any_occluder(shadowOrigin, toLight, spheres, sphereCount, planes, planeCount, triangles, triangleCount, shadowDistance);
+
+    float diffuse = max(dot(hit.normal, lightDir), 0.0f);
+    float shadowFactor = shadowed ? 0.18f : 1.0f;
+    float3 ambient = hit.albedo * 0.08f;
+
+    if (hit.materialType == MATERIAL_LAMBERTIAN) {
+        return ambient + hit.albedo * (0.92f * diffuse * shadowFactor);
+    }
+
+    float3 viewDir = normalize(-rd);
+    float3 reflected = reflect(-lightDir, hit.normal);
+    float shininess = mix(80.0f, 8.0f, clamp(hit.roughness, 0.0f, 1.0f));
+    float specular = pow(max(dot(viewDir, reflected), 0.0f), shininess);
+    float metalDiffuse = 0.12f * diffuse;
+    float3 metalBase = hit.albedo * (0.18f + metalDiffuse * shadowFactor);
+    float3 metalSpec = hit.albedo * (1.4f * specular * shadowFactor);
+    return ambient * 0.5f + metalBase + metalSpec;
 }
 
 kernel void renderScene(device uchar4* outPixels [[buffer(0)]],
@@ -144,11 +236,7 @@ kernel void renderScene(device uchar4* outPixels [[buffer(0)]],
     float3 rd = normalize(camera.forward * camera.focalLength + camera.right * screen.x + camera.up * (screen.y * camera.viewportScale));
 
     HitInfo hit;
-    hit.t = 0.0f;
-    hit.position = float3(0.0f);
-    hit.normal = float3(0.0f);
-    hit.albedo = float3(0.0f);
-    hit.hit = false;
+    init_hit(hit);
 
     for (uint i = 0; i < uniforms.sphereCount; ++i) intersect_sphere(ro, rd, spheres[i], hit);
     for (uint i = 0; i < uniforms.planeCount; ++i) intersect_plane(ro, rd, planes[i], hit);
@@ -156,11 +244,7 @@ kernel void renderScene(device uchar4* outPixels [[buffer(0)]],
 
     float3 color;
     if (hit.hit) {
-        float3 lightDir = normalize(float3(-0.6f, 0.9f, -0.4f));
-        float diffuse = max(dot(hit.normal, lightDir), 0.0f);
-        float rim = pow(1.0f - max(dot(hit.normal, -rd), 0.0f), 3.0f);
-        float3 fill = float3(0.10f, 0.11f, 0.13f);
-        color = hit.albedo * (fill + diffuse) + rim * float3(0.12f, 0.10f, 0.08f);
+        color = shade_hit(hit, ro, rd, spheres, uniforms.sphereCount, planes, uniforms.planeCount, triangles, uniforms.triangleCount);
     } else {
         float t = 0.5f * (rd.y + 1.0f);
         color = mix(float3(0.95f, 0.97f, 1.0f), float3(0.40f, 0.60f, 0.90f), t);

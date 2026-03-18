@@ -16,23 +16,39 @@ CameraData makeCamera(simd_float3 origin, simd_float3 target, float focal_length
     return camera;
 }
 
-PlaneData makeGroundPlane(float y, simd_float3 a, simd_float3 b, float checker_scale) {
+PlaneData makeGroundPlane(float y, simd_float3 a, simd_float3 b, float checker_scale, float roughness = 0.65f) {
     PlaneData plane {};
     plane.normal = simd_make_float3(0.0f, 1.0f, 0.0f);
     plane.offset = -y;
     plane.albedoA = a;
     plane.albedoB = b;
     plane.checkerScale = checker_scale;
+    plane.roughness = roughness;
+    plane.materialType = MATERIAL_LAMBERTIAN;
+    plane.emissionStrength = 0.0f;
     return plane;
 }
 
-TriangleData makeTriangle(simd_float3 v0, simd_float3 v1, simd_float3 v2, simd_float3 albedo, float roughness = 0.2f) {
+SphereData makeSphere(simd_float3 center, float radius, simd_float3 albedo, float roughness, MaterialType material, float emission = 0.0f) {
+    SphereData sphere {};
+    sphere.center = center;
+    sphere.radius = radius;
+    sphere.albedo = albedo;
+    sphere.roughness = roughness;
+    sphere.materialType = static_cast<uint32_t>(material);
+    sphere.emissionStrength = emission;
+    return sphere;
+}
+
+TriangleData makeTriangle(simd_float3 v0, simd_float3 v1, simd_float3 v2, simd_float3 albedo, float roughness = 0.2f, MaterialType material = MATERIAL_LAMBERTIAN, float emission = 0.0f) {
     TriangleData tri {};
     tri.v0 = v0;
     tri.v1 = v1;
     tri.v2 = v2;
     tri.albedo = albedo;
     tri.roughness = roughness;
+    tri.materialType = static_cast<uint32_t>(material);
+    tri.emissionStrength = emission;
     return tri;
 }
 
@@ -40,17 +56,17 @@ SceneDescription makeStarterScene() {
     SceneDescription scene;
     scene.name = "starter";
     scene.label = "Starter";
-    scene.description = "Balanced starter composition with three spheres, a checker ground plane, and warm/cool triangle accents.";
+    scene.description = "Starter composition with Lambertian, metal, and emissive materials plus hard shadowing.";
     scene.camera = makeCamera(simd_make_float3(0.0f, 0.9f, 2.2f), simd_make_float3(0.0f, -0.15f, -3.8f), 1.5f, 1.0f);
     scene.planes.push_back(makeGroundPlane(-1.0f, simd_make_float3(0.85f, 0.86f, 0.88f), simd_make_float3(0.28f, 0.30f, 0.34f), 1.2f));
     scene.spheres = {
-        {simd_make_float3(-1.2f, -0.15f, -3.6f), 0.85f, simd_make_float3(0.82f, 0.33f, 0.20f), 0.2f},
-        {simd_make_float3(0.35f, -0.30f, -2.75f), 0.70f, simd_make_float3(0.22f, 0.50f, 0.85f), 0.35f},
-        {simd_make_float3(1.65f, -0.45f, -4.35f), 0.55f, simd_make_float3(0.82f, 0.78f, 0.24f), 0.15f},
+        makeSphere(simd_make_float3(-1.2f, -0.15f, -3.6f), 0.85f, simd_make_float3(0.82f, 0.33f, 0.20f), 0.18f, MATERIAL_LAMBERTIAN),
+        makeSphere(simd_make_float3(0.35f, -0.30f, -2.75f), 0.70f, simd_make_float3(0.78f, 0.82f, 0.88f), 0.10f, MATERIAL_METAL),
+        makeSphere(simd_make_float3(1.65f, -0.45f, -4.35f), 0.55f, simd_make_float3(0.82f, 0.78f, 0.24f), 0.28f, MATERIAL_LAMBERTIAN),
     };
     scene.triangles = {
-        makeTriangle(simd_make_float3(-2.4f, -0.15f, -5.8f), simd_make_float3(-1.7f, 1.0f, -5.4f), simd_make_float3(-0.9f, -0.2f, -5.6f), simd_make_float3(0.78f, 0.26f, 0.22f)),
-        makeTriangle(simd_make_float3(0.9f, -0.25f, -5.4f), simd_make_float3(2.0f, 0.95f, -5.8f), simd_make_float3(2.55f, -0.35f, -5.1f), simd_make_float3(0.18f, 0.52f, 0.82f)),
+        makeTriangle(simd_make_float3(-2.4f, -0.15f, -5.8f), simd_make_float3(-1.7f, 1.0f, -5.4f), simd_make_float3(-0.9f, -0.2f, -5.6f), simd_make_float3(0.78f, 0.26f, 0.22f), 0.25f, MATERIAL_LAMBERTIAN),
+        makeTriangle(simd_make_float3(0.9f, -0.25f, -5.4f), simd_make_float3(2.0f, 0.95f, -5.8f), simd_make_float3(2.55f, -0.35f, -5.1f), simd_make_float3(1.00f, 0.86f, 0.55f), 0.0f, MATERIAL_EMISSIVE, 1.75f),
     };
     return scene;
 }
@@ -59,19 +75,19 @@ SceneDescription makeWideScene() {
     SceneDescription scene;
     scene.name = "wide";
     scene.label = "Wide";
-    scene.description = "Wider camera framing with four spheres, a checker ground plane, and layered triangles in the background.";
+    scene.description = "Wider framing with mixed Lambertian/metal surfaces, emissive accents, and hard shadows.";
     scene.camera = makeCamera(simd_make_float3(0.0f, 1.35f, 3.8f), simd_make_float3(0.0f, -0.35f, -4.4f), 1.7f, 1.0f);
     scene.planes.push_back(makeGroundPlane(-1.0f, simd_make_float3(0.90f, 0.90f, 0.92f), simd_make_float3(0.22f, 0.24f, 0.28f), 1.4f));
     scene.spheres = {
-        {simd_make_float3(-2.3f, -0.35f, -5.1f), 0.65f, simd_make_float3(0.85f, 0.42f, 0.22f), 0.25f},
-        {simd_make_float3(-0.7f, -0.10f, -4.0f), 0.90f, simd_make_float3(0.26f, 0.58f, 0.88f), 0.40f},
-        {simd_make_float3(1.0f, -0.45f, -3.2f), 0.55f, simd_make_float3(0.78f, 0.74f, 0.28f), 0.20f},
-        {simd_make_float3(2.35f, -0.55f, -5.6f), 0.45f, simd_make_float3(0.28f, 0.76f, 0.55f), 0.18f},
+        makeSphere(simd_make_float3(-2.3f, -0.35f, -5.1f), 0.65f, simd_make_float3(0.85f, 0.42f, 0.22f), 0.22f, MATERIAL_LAMBERTIAN),
+        makeSphere(simd_make_float3(-0.7f, -0.10f, -4.0f), 0.90f, simd_make_float3(0.82f, 0.86f, 0.92f), 0.08f, MATERIAL_METAL),
+        makeSphere(simd_make_float3(1.0f, -0.45f, -3.2f), 0.55f, simd_make_float3(0.78f, 0.74f, 0.28f), 0.18f, MATERIAL_LAMBERTIAN),
+        makeSphere(simd_make_float3(2.35f, -0.55f, -5.6f), 0.45f, simd_make_float3(0.28f, 0.76f, 0.55f), 0.24f, MATERIAL_LAMBERTIAN),
     };
     scene.triangles = {
-        makeTriangle(simd_make_float3(-3.4f, -0.1f, -7.0f), simd_make_float3(-2.2f, 1.9f, -7.4f), simd_make_float3(-1.0f, -0.15f, -6.6f), simd_make_float3(0.92f, 0.32f, 0.24f)),
-        makeTriangle(simd_make_float3(-0.2f, -0.25f, -7.2f), simd_make_float3(1.2f, 1.55f, -7.6f), simd_make_float3(2.0f, -0.2f, -6.9f), simd_make_float3(0.20f, 0.56f, 0.88f)),
-        makeTriangle(simd_make_float3(1.8f, -0.15f, -6.3f), simd_make_float3(3.3f, 1.3f, -6.8f), simd_make_float3(4.0f, -0.25f, -6.0f), simd_make_float3(0.84f, 0.74f, 0.26f)),
+        makeTriangle(simd_make_float3(-3.4f, -0.1f, -7.0f), simd_make_float3(-2.2f, 1.9f, -7.4f), simd_make_float3(-1.0f, -0.15f, -6.6f), simd_make_float3(0.92f, 0.32f, 0.24f), 0.22f, MATERIAL_LAMBERTIAN),
+        makeTriangle(simd_make_float3(-0.2f, -0.25f, -7.2f), simd_make_float3(1.2f, 1.55f, -7.6f), simd_make_float3(2.0f, -0.2f, -6.9f), simd_make_float3(0.20f, 0.56f, 0.88f), 0.10f, MATERIAL_METAL),
+        makeTriangle(simd_make_float3(1.8f, -0.15f, -6.3f), simd_make_float3(3.3f, 1.3f, -6.8f), simd_make_float3(4.0f, -0.25f, -6.0f), simd_make_float3(1.00f, 0.90f, 0.62f), 0.0f, MATERIAL_EMISSIVE, 2.2f),
     };
     return scene;
 }
@@ -117,7 +133,9 @@ std::string buildOptionsSchemaJson() {
     out << "  },\n";
     out << "  \"capabilities\": {\n";
     out << "    \"scene_registry\": true,\n";
-    out << "    \"save_png\": false\n";
+    out << "    \"save_png\": false,\n";
+    out << "    \"material_types\": [\"lambertian\", \"metal\", \"emissive\"],\n";
+    out << "    \"hard_shadows\": true\n";
     out << "  }\n";
     out << "}\n";
     return out.str();

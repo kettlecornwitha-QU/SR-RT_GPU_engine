@@ -6,6 +6,12 @@
 #include <string>
 #include <vector>
 
+enum MaterialType : uint32_t {
+    MATERIAL_LAMBERTIAN = 0,
+    MATERIAL_METAL = 1,
+    MATERIAL_EMISSIVE = 2,
+};
+
 struct RenderOptions {
     uint32_t width = 960;
     uint32_t height = 540;
@@ -43,6 +49,9 @@ struct SphereData {
     float radius;
     simd_float3 albedo;
     float roughness;
+    uint32_t materialType;
+    float emissionStrength;
+    simd_float2 pad0;
 };
 
 struct PlaneData {
@@ -51,7 +60,10 @@ struct PlaneData {
     simd_float3 albedoA;
     float checkerScale;
     simd_float3 albedoB;
-    float pad0;
+    float roughness;
+    uint32_t materialType;
+    float emissionStrength;
+    simd_float2 pad0;
 };
 
 struct TriangleData {
@@ -63,6 +75,9 @@ struct TriangleData {
     float pad2;
     simd_float3 albedo;
     float roughness;
+    uint32_t materialType;
+    float emissionStrength;
+    simd_float2 pad3;
 };
 
 struct SceneDescription {
