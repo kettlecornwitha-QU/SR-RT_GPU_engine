@@ -18,6 +18,11 @@
 namespace fs = std::filesystem;
 
 namespace {
+struct GuidePixel {
+    simd_float3 normal;
+    simd_float3 albedo;
+};
+
 std::string readTextFile(const fs::path& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return {};
@@ -57,6 +62,61 @@ id<MTLBuffer> makeSceneBuffer(id<MTLDevice> device, const std::vector<T>& values
                                length:sizeof(T) * values.size()
                               options:MTLResourceStorageModeShared];
 }
+
+std::vector<simd_float3> denoiseBeauty(const std::vector<simd_float3>& beauty,
+                                       const std::vector<GuidePixel>& guides,
+                                       uint32_t width,
+                                       uint32_t height) {
+    std::vector<simd_float3> filtered(beauty.size(), simd_make_float3(0.0f, 0.0f, 0.0f));
+    const int radius = 2;
+    const float spatialSigma = 1.6f;
+    const float colorSigma = 0.45f;
+    const float albedoSigma = 0.30f;
+    const float normalSigma = 0.18f;
+
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            const size_t idx = static_cast<size_t>(y) * width + x;
+            const simd_float3 centerColor = beauty[idx];
+            const simd_float3 centerAlbedo = guides[idx].albedo;
+            const simd_float3 centerNormal = guides[idx].normal;
+            simd_float3 accum = simd_make_float3(0.0f, 0.0f, 0.0f);
+            float weightSum = 0.0f;
+
+            for (int oy = -radius; oy <= radius; ++oy) {
+                int sy = static_cast<int>(y) + oy;
+                if (sy < 0 || sy >= static_cast<int>(height)) continue;
+                for (int ox = -radius; ox <= radius; ++ox) {
+                    int sx = static_cast<int>(x) + ox;
+                    if (sx < 0 || sx >= static_cast<int>(width)) continue;
+
+                    const size_t sampleIdx = static_cast<size_t>(sy) * width + sx;
+                    const simd_float3 sampleColor = beauty[sampleIdx];
+                    const simd_float3 sampleAlbedo = guides[sampleIdx].albedo;
+                    const simd_float3 sampleNormal = guides[sampleIdx].normal;
+
+                    const float spatial2 = static_cast<float>(ox * ox + oy * oy);
+                    const float colorDist = simd_length(sampleColor - centerColor);
+                    const float albedoDist = simd_length(sampleAlbedo - centerAlbedo);
+                    const float normalDist = 1.0f - std::clamp(simd_dot(sampleNormal, centerNormal), 0.0f, 1.0f);
+
+                    const float spatialWeight = std::exp(-spatial2 / (2.0f * spatialSigma * spatialSigma));
+                    const float colorWeight = std::exp(-(colorDist * colorDist) / (2.0f * colorSigma * colorSigma));
+                    const float albedoWeight = std::exp(-(albedoDist * albedoDist) / (2.0f * albedoSigma * albedoSigma));
+                    const float normalWeight = std::exp(-(normalDist * normalDist) / (2.0f * normalSigma * normalSigma));
+                    const float weight = spatialWeight * colorWeight * albedoWeight * normalWeight;
+
+                    accum += sampleColor * weight;
+                    weightSum += weight;
+                }
+            }
+
+            filtered[idx] = weightSum > 0.0f ? accum / weightSum : centerColor;
+        }
+    }
+
+    return filtered;
+}
 }
 
 bool renderSceneToFile(const RenderOptions& options, const SceneDescription& scene, std::string* error_message) {
@@ -95,11 +155,15 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
 
         const size_t pixelCount = static_cast<size_t>(options.width) * static_cast<size_t>(options.height);
         id<MTLBuffer> outBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
-        if (outBuffer == nil) {
-            if (error_message) *error_message = "Failed to allocate Metal output buffer.";
+        id<MTLBuffer> normalBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
+        id<MTLBuffer> albedoBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
+        if (outBuffer == nil || normalBuffer == nil || albedoBuffer == nil) {
+            if (error_message) *error_message = "Failed to allocate Metal output buffers.";
             return false;
         }
         std::memset([outBuffer contents], 0, pixelCount * sizeof(float) * 4);
+        std::memset([normalBuffer contents], 0, pixelCount * sizeof(float) * 4);
+        std::memset([albedoBuffer contents], 0, pixelCount * sizeof(float) * 4);
 
         id<MTLBuffer> cameraBuffer = [device newBufferWithBytes:&scene.camera length:sizeof(CameraData) options:MTLResourceStorageModeShared];
         id<MTLBuffer> sphereBuffer = makeSceneBuffer(device, scene.spheres);
@@ -152,6 +216,8 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
             [encoder setBuffer:sphereBuffer offset:0 atIndex:3];
             [encoder setBuffer:planeBuffer offset:0 atIndex:4];
             [encoder setBuffer:triangleBuffer offset:0 atIndex:5];
+            [encoder setBuffer:normalBuffer offset:0 atIndex:6];
+            [encoder setBuffer:albedoBuffer offset:0 atIndex:7];
             [encoder dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
             [encoder endEncoding];
             [commandBuffer commit];
@@ -159,12 +225,25 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
         }
 
         const auto* accum = static_cast<const float*>([outBuffer contents]);
-        std::vector<uint8_t> rgb(pixelCount * 3);
+        const auto* normalAccum = static_cast<const float*>([normalBuffer contents]);
+        const auto* albedoAccum = static_cast<const float*>([albedoBuffer contents]);
+        std::vector<simd_float3> beauty(pixelCount);
+        std::vector<GuidePixel> guides(pixelCount);
         const float invSamples = 1.0f / static_cast<float>(spp);
         for (size_t i = 0; i < pixelCount; ++i) {
-            float r = accum[i * 4 + 0] * invSamples;
-            float g = accum[i * 4 + 1] * invSamples;
-            float b = accum[i * 4 + 2] * invSamples;
+            beauty[i] = simd_make_float3(accum[i * 4 + 0], accum[i * 4 + 1], accum[i * 4 + 2]) * invSamples;
+            simd_float3 normal = simd_make_float3(normalAccum[i * 4 + 0], normalAccum[i * 4 + 1], normalAccum[i * 4 + 2]) * invSamples;
+            simd_float3 albedo = simd_make_float3(albedoAccum[i * 4 + 0], albedoAccum[i * 4 + 1], albedoAccum[i * 4 + 2]) * invSamples;
+            guides[i].normal = simd_normalize(simd_max(normal * 2.0f - 1.0f, simd_make_float3(-1.0f, -1.0f, -1.0f)));
+            guides[i].albedo = albedo;
+        }
+
+        std::vector<simd_float3> denoised = denoiseBeauty(beauty, guides, options.width, options.height);
+        std::vector<uint8_t> rgb(pixelCount * 3);
+        for (size_t i = 0; i < pixelCount; ++i) {
+            float r = denoised[i].x;
+            float g = denoised[i].y;
+            float b = denoised[i].z;
 
             r = r / (1.0f + r);
             g = g / (1.0f + g);
