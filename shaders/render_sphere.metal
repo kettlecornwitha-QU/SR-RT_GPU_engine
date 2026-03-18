@@ -239,13 +239,98 @@ static inline float3 ambient_fill(thread const HitInfo& hit) {
     return hit.albedo * hemiTint * 0.28f;
 }
 
-static inline float3 shade_hit(thread const HitInfo& hit,
-                               float3 rd,
-                               constant SphereData* spheres, uint sphereCount,
-                               constant PlaneData* planes, uint planeCount,
-                               constant TriangleData* triangles, uint triangleCount,
-                               constant RenderUniforms& uniforms,
-                               thread uint& rng) {
+static inline float triangle_area(constant TriangleData& tri) {
+    return 0.5f * length(cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
+}
+
+static inline float3 sample_triangle_point(constant TriangleData& tri, thread uint& rng) {
+    float2 xi = rand2(rng);
+    float su = sqrt(xi.x);
+    float b0 = 1.0f - su;
+    float b1 = xi.y * su;
+    float b2 = 1.0f - b0 - b1;
+    return tri.v0 * b0 + tri.v1 * b1 + tri.v2 * b2;
+}
+
+static inline float3 direct_emissive_light(thread const HitInfo& hit,
+                                           constant SphereData* spheres, uint sphereCount,
+                                           constant PlaneData* planes, uint planeCount,
+                                           constant TriangleData* triangles, uint triangleCount,
+                                           thread uint& rng) {
+    float3 contribution = float3(0.0f);
+    const float3 shadowOrigin = hit.position + hit.normal * 1e-3f;
+    const float3 viewNormal = hit.normal;
+    const uint emissiveSamples = 3;
+    for (uint i = 0; i < triangleCount; ++i) {
+        const constant TriangleData& tri = triangles[i];
+        if (tri.materialType != MATERIAL_EMISSIVE || tri.emissionStrength <= 0.0f) {
+            continue;
+        }
+        float3 triNormal = normalize(cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
+        float area = triangle_area(tri);
+        if (area <= 1e-6f) {
+            continue;
+        }
+        float3 triContribution = float3(0.0f);
+        for (uint sample = 0; sample < emissiveSamples; ++sample) {
+            float3 lightPoint = sample_triangle_point(tri, rng);
+            float3 toLight = lightPoint - shadowOrigin;
+            float dist2 = max(dot(toLight, toLight), 1e-5f);
+            float dist = sqrt(dist2);
+            float3 lightDir = toLight / dist;
+            float ndotl = max(dot(viewNormal, lightDir), 0.0f);
+            float lndot = max(dot(triNormal, -lightDir), 0.0f);
+            if (ndotl <= 0.0f || lndot <= 0.0f) {
+                continue;
+            }
+            bool occluded = any_occluder(shadowOrigin, lightDir,
+                                         spheres, sphereCount,
+                                         planes, planeCount,
+                                         triangles, triangleCount,
+                                         dist - 2e-3f);
+            if (occluded) {
+                continue;
+            }
+            float geom = (ndotl * lndot * area) / max(0.35f * PI_F * dist2, 1e-5f);
+            triContribution += tri.albedo * tri.emissionStrength * geom;
+        }
+        contribution += triContribution / float(emissiveSamples);
+    }
+    return contribution * 2.4f;
+}
+
+static inline bool trace_scene(float3 ro, float3 rd,
+                                    constant SphereData* spheres, uint sphereCount,
+                                    constant PlaneData* planes, uint planeCount,
+                                    constant TriangleData* triangles, uint triangleCount,
+                                    thread HitInfo& hit) {
+    init_hit(hit);
+    for (uint i = 0; i < sphereCount; ++i) intersect_sphere(ro, rd, spheres[i], hit);
+    for (uint i = 0; i < planeCount; ++i) intersect_plane(ro, rd, planes[i], hit);
+    for (uint i = 0; i < triangleCount; ++i) intersect_triangle(ro, rd, triangles[i], hit);
+    return hit.hit;
+}
+
+static inline float3 cosine_sample_hemisphere(float3 normal, thread uint& rng) {
+    float2 xi = rand2(rng);
+    float r = sqrt(xi.x);
+    float phi = 2.0f * PI_F * xi.y;
+    float x = r * cos(phi);
+    float y = r * sin(phi);
+    float z = sqrt(max(0.0f, 1.0f - xi.x));
+    float3 tangent;
+    float3 bitangent;
+    build_basis(normal, tangent, bitangent);
+    return normalize(tangent * x + bitangent * y + normal * z);
+}
+
+static inline float3 evaluate_direct_lighting(thread const HitInfo& hit,
+                                              float3 rd,
+                                              constant SphereData* spheres, uint sphereCount,
+                                              constant PlaneData* planes, uint planeCount,
+                                              constant TriangleData* triangles, uint triangleCount,
+                                              constant RenderUniforms& uniforms,
+                                              thread uint& rng) {
     if (hit.materialType == MATERIAL_EMISSIVE) {
         return hit.albedo * hit.emissionStrength;
     }
@@ -264,10 +349,15 @@ static inline float3 shade_hit(thread const HitInfo& hit,
     float wrapDiffuse = max((dot(hit.normal, lightDir) + 0.25f) / 1.25f, 0.0f);
     float3 directSun = float3(1.05f, 0.99f, 0.92f) * diffuse * visibility;
     float3 bouncedAmbient = ambient_fill(hit);
+    float3 emissiveDirect = direct_emissive_light(hit,
+                                                  spheres, sphereCount,
+                                                  planes, planeCount,
+                                                  triangles, triangleCount,
+                                                  rng);
 
     if (hit.materialType == MATERIAL_LAMBERTIAN) {
         float3 base = hit.albedo * (0.70f * directSun + 0.22f * wrapDiffuse + bouncedAmbient);
-        return base;
+        return base + hit.albedo * (1.25f * emissiveDirect);
     }
 
     float3 viewDir = normalize(-rd);
@@ -279,7 +369,67 @@ static inline float3 shade_hit(thread const HitInfo& hit,
     float3 metalBase = hit.albedo * (0.18f + 0.30f * bouncedAmbient + 0.16f * wrapDiffuse * visibility);
     float3 metalSpec = mix(hit.albedo, float3(1.0f), 0.45f) * (1.6f * specular * visibility);
     float3 environment = reflectedSky * (0.18f + 0.35f * fresnel) * (1.0f - hit.roughness * 0.55f);
-    return metalBase + metalSpec + environment;
+    float3 emissiveSpec = emissiveDirect * (0.45f + 0.85f * (1.0f - hit.roughness));
+    return metalBase + metalSpec + environment + emissiveSpec;
+}
+
+static inline float3 shade_hit(thread const HitInfo& hit,
+                               float3 rd,
+                               constant SphereData* spheres, uint sphereCount,
+                               constant PlaneData* planes, uint planeCount,
+                               constant TriangleData* triangles, uint triangleCount,
+                               constant RenderUniforms& uniforms,
+                               thread uint& rng) {
+    float3 direct = evaluate_direct_lighting(hit, rd,
+                                             spheres, sphereCount,
+                                             planes, planeCount,
+                                             triangles, triangleCount,
+                                             uniforms, rng);
+    if (hit.materialType == MATERIAL_EMISSIVE) {
+        return direct;
+    }
+
+    float3 bounceColor = float3(0.0f);
+    float3 bounceOrigin = hit.position + hit.normal * 1e-3f;
+    float3 bounceDir;
+    float bounceWeight = 1.0f;
+
+    if (hit.materialType == MATERIAL_LAMBERTIAN) {
+        bounceDir = cosine_sample_hemisphere(hit.normal, rng);
+        bounceWeight = 0.55f;
+    } else {
+        float3 perfectReflect = reflect(rd, hit.normal);
+        float3 glossyDir = cosine_sample_hemisphere(perfectReflect, rng);
+        bounceDir = normalize(mix(perfectReflect, glossyDir, clamp(hit.roughness * 0.55f, 0.0f, 1.0f)));
+        if (dot(bounceDir, hit.normal) <= 0.0f) {
+            bounceDir = normalize(perfectReflect + hit.normal * 0.2f);
+        }
+        bounceWeight = 0.45f + 0.35f * (1.0f - hit.roughness);
+    }
+
+    HitInfo bounceHit;
+    if (trace_scene(bounceOrigin, bounceDir,
+                    spheres, sphereCount,
+                    planes, planeCount,
+                    triangles, triangleCount,
+                    bounceHit)) {
+        if (bounceHit.materialType == MATERIAL_EMISSIVE) {
+            bounceColor = bounceHit.albedo * bounceHit.emissionStrength;
+        } else {
+            bounceColor = evaluate_direct_lighting(bounceHit, bounceDir,
+                                                   spheres, sphereCount,
+                                                   planes, planeCount,
+                                                   triangles, triangleCount,
+                                                   uniforms, rng);
+        }
+    } else {
+        bounceColor = sky_color(bounceDir);
+    }
+
+    if (hit.materialType == MATERIAL_LAMBERTIAN) {
+        return direct + hit.albedo * bounceColor * bounceWeight;
+    }
+    return direct + bounceColor * bounceWeight;
 }
 
 kernel void renderScene(device float4* outAccum [[buffer(0)]],
@@ -303,13 +453,11 @@ kernel void renderScene(device float4* outAccum [[buffer(0)]],
     float3 rd = normalize(camera.forward * camera.focalLength + camera.right * screen.x + camera.up * (screen.y * camera.viewportScale));
 
     HitInfo hit;
-    init_hit(hit);
-
-    for (uint i = 0; i < uniforms.sphereCount; ++i) intersect_sphere(ro, rd, spheres[i], hit);
-    for (uint i = 0; i < uniforms.planeCount; ++i) intersect_plane(ro, rd, planes[i], hit);
-    for (uint i = 0; i < uniforms.triangleCount; ++i) intersect_triangle(ro, rd, triangles[i], hit);
-
-    float3 color = hit.hit
+    float3 color = trace_scene(ro, rd,
+                               spheres, uniforms.sphereCount,
+                               planes, uniforms.planeCount,
+                               triangles, uniforms.triangleCount,
+                               hit)
         ? shade_hit(hit, rd, spheres, uniforms.sphereCount, planes, uniforms.planeCount, triangles, uniforms.triangleCount, uniforms, rng)
         : sky_color(rd);
 

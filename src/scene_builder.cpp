@@ -56,7 +56,7 @@ SceneDescription makeStarterScene() {
     SceneDescription scene;
     scene.name = "starter";
     scene.label = "Starter";
-    scene.description = "Starter composition with Lambertian, metal, and emissive materials plus hard shadowing.";
+    scene.description = "Starter composition with Lambertian, metal, and emissive materials, with the emissive triangle positioned to cast visible direct light.";
     scene.camera = makeCamera(simd_make_float3(0.0f, 0.9f, 2.2f), simd_make_float3(0.0f, -0.15f, -3.8f), 1.5f, 1.0f);
     scene.planes.push_back(makeGroundPlane(-1.0f, simd_make_float3(0.85f, 0.86f, 0.88f), simd_make_float3(0.28f, 0.30f, 0.34f), 1.2f));
     scene.spheres = {
@@ -66,7 +66,7 @@ SceneDescription makeStarterScene() {
     };
     scene.triangles = {
         makeTriangle(simd_make_float3(-2.4f, -0.15f, -5.8f), simd_make_float3(-1.7f, 1.0f, -5.4f), simd_make_float3(-0.9f, -0.2f, -5.6f), simd_make_float3(0.78f, 0.26f, 0.22f), 0.25f, MATERIAL_LAMBERTIAN),
-        makeTriangle(simd_make_float3(0.9f, -0.25f, -5.4f), simd_make_float3(2.0f, 0.95f, -5.8f), simd_make_float3(2.55f, -0.35f, -5.1f), simd_make_float3(1.00f, 0.86f, 0.55f), 0.0f, MATERIAL_EMISSIVE, 1.75f),
+        makeTriangle(simd_make_float3(0.45f, 0.15f, -3.45f), simd_make_float3(1.65f, 1.10f, -3.85f), simd_make_float3(2.05f, -0.05f, -3.10f), simd_make_float3(1.00f, 0.86f, 0.55f), 0.0f, MATERIAL_EMISSIVE, 4.25f),
     };
     return scene;
 }
@@ -75,7 +75,7 @@ SceneDescription makeWideScene() {
     SceneDescription scene;
     scene.name = "wide";
     scene.label = "Wide";
-    scene.description = "Wider framing with mixed Lambertian/metal surfaces, emissive accents, hard shadows, and multisampled direct lighting.";
+    scene.description = "Wider framing with mixed Lambertian/metal surfaces, stronger emissive lighting, hard shadows, and multisampled direct lighting.";
     scene.camera = makeCamera(simd_make_float3(0.0f, 1.35f, 3.8f), simd_make_float3(0.0f, -0.35f, -4.4f), 1.7f, 1.0f);
     scene.planes.push_back(makeGroundPlane(-1.0f, simd_make_float3(0.90f, 0.90f, 0.92f), simd_make_float3(0.22f, 0.24f, 0.28f), 1.4f));
     scene.spheres = {
@@ -87,7 +87,7 @@ SceneDescription makeWideScene() {
     scene.triangles = {
         makeTriangle(simd_make_float3(-3.4f, -0.1f, -7.0f), simd_make_float3(-2.2f, 1.9f, -7.4f), simd_make_float3(-1.0f, -0.15f, -6.6f), simd_make_float3(0.92f, 0.32f, 0.24f), 0.22f, MATERIAL_LAMBERTIAN),
         makeTriangle(simd_make_float3(-0.2f, -0.25f, -7.2f), simd_make_float3(1.2f, 1.55f, -7.6f), simd_make_float3(2.0f, -0.2f, -6.9f), simd_make_float3(0.20f, 0.56f, 0.88f), 0.10f, MATERIAL_METAL),
-        makeTriangle(simd_make_float3(1.8f, -0.15f, -6.3f), simd_make_float3(3.3f, 1.3f, -6.8f), simd_make_float3(4.0f, -0.25f, -6.0f), simd_make_float3(1.00f, 0.90f, 0.62f), 0.0f, MATERIAL_EMISSIVE, 2.2f),
+        makeTriangle(simd_make_float3(1.15f, 0.10f, -4.65f), simd_make_float3(2.45f, 1.25f, -5.05f), simd_make_float3(3.05f, -0.05f, -4.30f), simd_make_float3(1.00f, 0.90f, 0.62f), 0.0f, MATERIAL_EMISSIVE, 4.85f),
     };
     return scene;
 }
