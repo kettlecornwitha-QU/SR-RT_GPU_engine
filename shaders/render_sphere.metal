@@ -4,6 +4,8 @@ using namespace metal;
 constant uint MATERIAL_LAMBERTIAN = 0;
 constant uint MATERIAL_METAL = 1;
 constant uint MATERIAL_EMISSIVE = 2;
+constant uint MATERIAL_DIELECTRIC = 3;
+constant uint MATERIAL_COATED = 4;
 constant float PI_F = 3.14159265358979323846f;
 constant float INV_PHI = 0.6180339887498948482f;
 
@@ -77,6 +79,7 @@ struct HitInfo {
     float roughness;
     uint materialType;
     float emissionStrength;
+    bool frontFace;
     bool hit;
 };
 
@@ -88,7 +91,13 @@ static inline void init_hit(thread HitInfo& hit) {
     hit.roughness = 0.5f;
     hit.materialType = MATERIAL_LAMBERTIAN;
     hit.emissionStrength = 0.0f;
+    hit.frontFace = true;
     hit.hit = false;
+}
+
+static inline void set_face_normal(float3 rd, float3 outwardNormal, thread HitInfo& hit) {
+    hit.frontFace = dot(rd, outwardNormal) < 0.0f;
+    hit.normal = hit.frontFace ? outwardNormal : -outwardNormal;
 }
 
 static inline uint hash_u32(uint x) {
@@ -161,7 +170,7 @@ static inline bool intersect_sphere(float3 ro, float3 rd, constant SphereData& s
         hit.hit = true;
         hit.t = t;
         hit.position = ro + rd * t;
-        hit.normal = normalize(hit.position - sphere.center);
+        set_face_normal(rd, normalize(hit.position - sphere.center), hit);
         hit.albedo = sphere.albedo;
         hit.roughness = sphere.roughness;
         hit.materialType = sphere.materialType;
@@ -182,7 +191,7 @@ static inline bool intersect_plane(float3 ro, float3 rd, constant PlaneData& pla
         hit.hit = true;
         hit.t = t;
         hit.position = p;
-        hit.normal = plane.normal;
+        set_face_normal(rd, plane.normal, hit);
         hit.albedo = useA ? plane.albedoA : plane.albedoB;
         hit.roughness = plane.roughness;
         hit.materialType = plane.materialType;
@@ -211,7 +220,7 @@ static inline bool intersect_triangle(float3 ro, float3 rd, constant TriangleDat
         hit.hit = true;
         hit.t = t;
         hit.position = ro + rd * t;
-        hit.normal = normalize(cross(e1, e2));
+        set_face_normal(rd, normalize(cross(e1, e2)), hit);
         hit.albedo = tri.albedo;
         hit.roughness = tri.roughness;
         hit.materialType = tri.materialType;
@@ -253,6 +262,25 @@ static inline float3 ambient_fill(thread const HitInfo& hit) {
     float3 warmGround = float3(0.16f, 0.14f, 0.10f);
     float3 hemiTint = mix(warmGround, coolSky, hemi);
     return hit.albedo * hemiTint * 0.28f;
+}
+
+static inline float schlick_fresnel(float cosine, float f0) {
+    float m = clamp(1.0f - cosine, 0.0f, 1.0f);
+    float m2 = m * m;
+    float m5 = m2 * m2 * m;
+    return f0 + (1.0f - f0) * m5;
+}
+
+static inline bool refract_safe(float3 uv, float3 n, float eta, thread float3& refracted) {
+    float cosTheta = min(dot(-uv, n), 1.0f);
+    float3 rOutPerp = eta * (uv + cosTheta * n);
+    float k = 1.0f - dot(rOutPerp, rOutPerp);
+    if (k <= 0.0f) {
+        return false;
+    }
+    float3 rOutParallel = -sqrt(k) * n;
+    refracted = rOutPerp + rOutParallel;
+    return true;
 }
 
 static inline float triangle_area(constant TriangleData& tri) {
@@ -374,6 +402,32 @@ static inline float3 evaluate_direct_lighting(thread const HitInfo& hit,
         return base + hit.albedo * (1.25f * emissiveDirect);
     }
 
+    if (hit.materialType == MATERIAL_COATED) {
+        float3 viewDir = normalize(-rd);
+        float ndotv = max(dot(hit.normal, viewDir), 0.0f);
+        float3 reflected = reflect(-lightDir, hit.normal);
+        float shininess = mix(150.0f, 22.0f, clamp(hit.roughness, 0.0f, 1.0f));
+        float specular = pow(max(dot(viewDir, reflected), 0.0f), shininess);
+        float fresnel = schlick_fresnel(ndotv, 0.04f);
+        float3 reflectedSky = sky_color(reflect(rd, hit.normal));
+        float3 diffuseBase = hit.albedo * (0.66f * directSun + 0.24f * wrapDiffuse + 1.10f * bouncedAmbient);
+        float3 clearcoat = float3(1.0f) * (1.45f * specular * visibility + 0.35f * fresnel);
+        float3 environment = reflectedSky * (0.10f + 0.32f * fresnel) * (1.0f - hit.roughness * 0.45f);
+        return diffuseBase + hit.albedo * (1.10f * emissiveDirect) + clearcoat + environment;
+    }
+
+    if (hit.materialType == MATERIAL_DIELECTRIC) {
+        float3 viewDir = normalize(-rd);
+        float ndotv = max(dot(hit.normal, viewDir), 0.0f);
+        float fresnel = schlick_fresnel(ndotv, 0.04f);
+        float diffuseWrap = 0.08f + 0.14f * wrapDiffuse + 0.18f * visibility;
+        float3 reflectedSky = sky_color(reflect(rd, hit.normal));
+        float3 tintedInterior = hit.albedo * (0.18f * bouncedAmbient + 0.12f * emissiveDirect + diffuseWrap);
+        float3 reflection = reflectedSky * (0.35f + 0.65f * fresnel) * (1.0f - hit.roughness * 0.35f);
+        float3 sunSpark = float3(1.0f) * pow(max(dot(viewDir, reflect(-lightDir, hit.normal)), 0.0f), mix(180.0f, 28.0f, hit.roughness));
+        return tintedInterior + reflection + sunSpark * (0.45f + 0.55f * visibility);
+    }
+
     float3 viewDir = normalize(-rd);
     float3 reflected = reflect(-lightDir, hit.normal);
     float shininess = mix(90.0f, 10.0f, clamp(hit.roughness, 0.0f, 1.0f));
@@ -411,6 +465,36 @@ static inline float3 shade_hit(thread const HitInfo& hit,
     if (hit.materialType == MATERIAL_LAMBERTIAN) {
         bounceDir = cosine_sample_hemisphere(hit.normal, rng, uniforms.sampleIndex);
         bounceWeight = 0.55f;
+    } else if (hit.materialType == MATERIAL_COATED) {
+        float3 glossyLobe = cosine_sample_hemisphere(hit.normal, rng, uniforms.sampleIndex + 29u);
+        float3 perfectReflect = reflect(rd, hit.normal);
+        bounceDir = normalize(mix(perfectReflect, glossyLobe, clamp(hit.roughness * 0.35f, 0.0f, 1.0f)));
+        if (dot(bounceDir, hit.normal) <= 0.0f) {
+            bounceDir = perfectReflect;
+        }
+        bounceWeight = 0.30f + 0.20f * (1.0f - hit.roughness);
+    } else if (hit.materialType == MATERIAL_DIELECTRIC) {
+        const float ior = 1.52f;
+        float eta = hit.frontFace ? (1.0f / ior) : ior;
+        float cosTheta = min(dot(-normalize(rd), hit.normal), 1.0f);
+        float sinTheta = sqrt(max(0.0f, 1.0f - cosTheta * cosTheta));
+        float f0 = pow((1.0f - ior) / (1.0f + ior), 2.0f);
+        float reflectProb = schlick_fresnel(cosTheta, f0);
+        bool cannotRefract = eta * sinTheta > 1.0f;
+        float3 refracted;
+        bool didRefract = !cannotRefract && refract_safe(normalize(rd), hit.normal, eta, refracted);
+        float3 perfectReflect = reflect(rd, hit.normal);
+        bool chooseReflect = cannotRefract || !didRefract || rand01(rng) < reflectProb;
+        if (chooseReflect) {
+            float3 glossyReflect = cosine_sample_hemisphere(perfectReflect, rng, uniforms.sampleIndex + 43u);
+            bounceDir = normalize(mix(perfectReflect, glossyReflect, clamp(hit.roughness * 0.18f, 0.0f, 1.0f)));
+            bounceOrigin = hit.position + hit.normal * 1e-3f;
+        } else {
+            float3 glossyRefract = cosine_sample_hemisphere(refracted, rng, uniforms.sampleIndex + 47u);
+            bounceDir = normalize(mix(refracted, glossyRefract, clamp(hit.roughness * 0.10f, 0.0f, 1.0f)));
+            bounceOrigin = hit.position - hit.normal * 1e-3f;
+        }
+        bounceWeight = 0.88f;
     } else {
         float3 perfectReflect = reflect(rd, hit.normal);
         float3 glossyDir = cosine_sample_hemisphere(perfectReflect, rng, uniforms.sampleIndex + 17u);
@@ -442,6 +526,16 @@ static inline float3 shade_hit(thread const HitInfo& hit,
 
     if (hit.materialType == MATERIAL_LAMBERTIAN) {
         return direct + hit.albedo * bounceColor * bounceWeight;
+    }
+    if (hit.materialType == MATERIAL_COATED) {
+        float fresnel = schlick_fresnel(max(dot(hit.normal, normalize(-rd)), 0.0f), 0.04f);
+        float3 diffuseBounce = hit.albedo * bounceColor * (0.18f + 0.12f * (1.0f - fresnel));
+        float3 specBounce = bounceColor * (0.22f + 0.28f * fresnel);
+        return direct + diffuseBounce + specBounce * bounceWeight;
+    }
+    if (hit.materialType == MATERIAL_DIELECTRIC) {
+        float tintStrength = hit.frontFace ? 0.92f : 0.78f;
+        return direct + bounceColor * mix(float3(1.0f), hit.albedo, tintStrength) * bounceWeight;
     }
     return direct + bounceColor * bounceWeight;
 }

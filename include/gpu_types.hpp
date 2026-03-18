@@ -10,6 +10,8 @@ enum MaterialType : uint32_t {
     MATERIAL_LAMBERTIAN = 0,
     MATERIAL_METAL = 1,
     MATERIAL_EMISSIVE = 2,
+    MATERIAL_DIELECTRIC = 3,
+    MATERIAL_COATED = 4,
 };
 
 struct RenderOptions {
