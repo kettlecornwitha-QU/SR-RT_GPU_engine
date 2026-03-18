@@ -93,6 +93,25 @@ SceneDescription makeWideScene() {
     return scene;
 }
 
+SceneDescription makeMaterialsScene() {
+    SceneDescription scene;
+    scene.name = "materials";
+    scene.label = "Materials";
+    scene.description = "Sphere-only material showcase with Lambertian, metal, coated, dielectric, and emissive spheres on a large ground sphere.";
+    scene.camera = makeCamera(simd_make_float3(0.0f, 1.0f, 4.8f), simd_make_float3(0.0f, -0.25f, -4.6f), 1.65f, 1.0f);
+    scene.spheres = {
+        makeSphere(simd_make_float3(0.0f, -1001.2f, -5.5f), 1000.0f, simd_make_float3(0.78f, 0.80f, 0.84f), 0.55f, MATERIAL_LAMBERTIAN),
+        makeSphere(simd_make_float3(-3.6f, -0.15f, -5.8f), 0.95f, simd_make_float3(0.82f, 0.32f, 0.20f), 0.20f, MATERIAL_LAMBERTIAN),
+        makeSphere(simd_make_float3(-1.7f, -0.18f, -5.2f), 0.92f, simd_make_float3(0.78f, 0.82f, 0.88f), 0.06f, MATERIAL_METAL),
+        makeSphere(simd_make_float3(0.1f, -0.20f, -4.9f), 0.90f, simd_make_float3(0.20f, 0.54f, 0.90f), 0.18f, MATERIAL_COATED),
+        makeSphere(simd_make_float3(1.9f, -0.18f, -5.1f), 0.92f, simd_make_float3(0.94f, 0.98f, 1.00f), 0.03f, MATERIAL_DIELECTRIC),
+        makeSphere(simd_make_float3(3.7f, -0.12f, -5.7f), 0.98f, simd_make_float3(1.00f, 0.86f, 0.56f), 0.0f, MATERIAL_EMISSIVE, 3.8f),
+        makeSphere(simd_make_float3(-0.85f, 1.85f, -6.8f), 0.65f, simd_make_float3(1.00f, 0.95f, 0.82f), 0.0f, MATERIAL_EMISSIVE, 4.8f),
+        makeSphere(simd_make_float3(2.2f, 1.45f, -6.4f), 0.50f, simd_make_float3(0.72f, 0.84f, 1.00f), 0.0f, MATERIAL_EMISSIVE, 3.4f),
+    };
+    return scene;
+}
+
 std::string escapeJson(const std::string& text) {
     std::ostringstream out;
     for (char c : text) {
@@ -110,11 +129,12 @@ std::string escapeJson(const std::string& text) {
 SceneDescription buildScene(const std::string& scene_name) {
     if (scene_name == "starter") return makeStarterScene();
     if (scene_name == "wide") return makeWideScene();
+    if (scene_name == "materials") return makeMaterialsScene();
     throw std::runtime_error("Unknown scene: " + scene_name);
 }
 
 std::vector<std::string> availableSceneNames() {
-    return {"starter", "wide"};
+    return {"starter", "wide", "materials"};
 }
 
 std::string buildOptionsSchemaJson() {
@@ -127,7 +147,7 @@ std::string buildOptionsSchemaJson() {
     out << "    \"spp\": 16\n";
     out << "  },\n";
     out << "  \"choices\": {\n";
-    out << "    \"scene\": [\"starter\", \"wide\"]\n";
+    out << "    \"scene\": [\"starter\", \"wide\", \"materials\"]\n";
     out << "  },\n";
     out << "  \"defaults\": {\n";
     out << "    \"scene\": \"starter\",\n";
@@ -146,7 +166,7 @@ std::string buildOptionsSchemaJson() {
 }
 
 std::string buildSceneRegistryJson() {
-    const auto scenes = std::vector<SceneDescription>{makeStarterScene(), makeWideScene()};
+    const auto scenes = std::vector<SceneDescription>{makeStarterScene(), makeWideScene(), makeMaterialsScene()};
     std::ostringstream out;
     out << "{\n";
     out << "  \"schema_version\": 1,\n";

@@ -47,6 +47,16 @@ fs::path shaderPathForBinary() {
     if (ec) exe = fs::path(pathbuf);
     return exe.parent_path() / "render_sphere.metal";
 }
+
+template <typename T>
+id<MTLBuffer> makeSceneBuffer(id<MTLDevice> device, const std::vector<T>& values) {
+    if (values.empty()) {
+        return [device newBufferWithLength:sizeof(T) options:MTLResourceStorageModeShared];
+    }
+    return [device newBufferWithBytes:values.data()
+                               length:sizeof(T) * values.size()
+                              options:MTLResourceStorageModeShared];
+}
 }
 
 bool renderSceneToFile(const RenderOptions& options, const SceneDescription& scene, std::string* error_message) {
@@ -92,9 +102,9 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
         std::memset([outBuffer contents], 0, pixelCount * sizeof(float) * 4);
 
         id<MTLBuffer> cameraBuffer = [device newBufferWithBytes:&scene.camera length:sizeof(CameraData) options:MTLResourceStorageModeShared];
-        id<MTLBuffer> sphereBuffer = [device newBufferWithBytes:scene.spheres.data() length:sizeof(SphereData) * scene.spheres.size() options:MTLResourceStorageModeShared];
-        id<MTLBuffer> planeBuffer = [device newBufferWithBytes:scene.planes.data() length:sizeof(PlaneData) * scene.planes.size() options:MTLResourceStorageModeShared];
-        id<MTLBuffer> triangleBuffer = [device newBufferWithBytes:scene.triangles.data() length:sizeof(TriangleData) * scene.triangles.size() options:MTLResourceStorageModeShared];
+        id<MTLBuffer> sphereBuffer = makeSceneBuffer(device, scene.spheres);
+        id<MTLBuffer> planeBuffer = makeSceneBuffer(device, scene.planes);
+        id<MTLBuffer> triangleBuffer = makeSceneBuffer(device, scene.triangles);
         if (cameraBuffer == nil || sphereBuffer == nil || planeBuffer == nil || triangleBuffer == nil) {
             if (error_message) *error_message = "Failed to allocate Metal scene buffers.";
             return false;
