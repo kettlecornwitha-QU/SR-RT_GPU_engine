@@ -5,6 +5,7 @@ constant uint MATERIAL_LAMBERTIAN = 0;
 constant uint MATERIAL_METAL = 1;
 constant uint MATERIAL_EMISSIVE = 2;
 constant float PI_F = 3.14159265358979323846f;
+constant float INV_PHI = 0.6180339887498948482f;
 
 struct RenderUniforms {
     uint width;
@@ -104,6 +105,21 @@ static inline float rand01(thread uint& state) {
     return float(state & 0x00ffffffu) / float(0x01000000u);
 }
 
+static inline float radical_inverse_vdc(uint bits) {
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10f;
+}
+
+static inline float2 sample_low_discrepancy(uint sampleIndex, uint scramble) {
+    float x = fract((float(sampleIndex) + 0.5f) * INV_PHI + float(scramble & 1023u) * 0.0009765625f);
+    float y = fract(radical_inverse_vdc(sampleIndex ^ scramble) + float((scramble >> 10) & 1023u) * 0.0009765625f);
+    return float2(x, y);
+}
+
 static inline float2 rand2(thread uint& state) {
     return float2(rand01(state), rand01(state));
 }
@@ -114,11 +130,11 @@ static inline void build_basis(float3 n, thread float3& t, thread float3& b) {
     b = normalize(cross(n, t));
 }
 
-static inline float3 sample_directional_light(float3 baseDir, float angularRadius, thread uint& rng) {
+static inline float3 sample_directional_light(float3 baseDir, float angularRadius, thread uint& rng, uint sampleIndex) {
     if (angularRadius <= 0.0f) {
         return normalize(baseDir);
     }
-    float2 xi = rand2(rng);
+    float2 xi = sample_low_discrepancy(sampleIndex, hash_u32(rng + 0x51f15e5du));
     float r = angularRadius * sqrt(xi.x);
     float phi = 2.0f * PI_F * xi.y;
     float2 disk = r * float2(cos(phi), sin(phi));
@@ -243,19 +259,11 @@ static inline float triangle_area(constant TriangleData& tri) {
     return 0.5f * length(cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
 }
 
-static inline float3 sample_triangle_point(constant TriangleData& tri, thread uint& rng) {
-    float2 xi = rand2(rng);
-    float su = sqrt(xi.x);
-    float b0 = 1.0f - su;
-    float b1 = xi.y * su;
-    float b2 = 1.0f - b0 - b1;
-    return tri.v0 * b0 + tri.v1 * b1 + tri.v2 * b2;
-}
-
 static inline float3 direct_emissive_light(thread const HitInfo& hit,
                                            constant SphereData* spheres, uint sphereCount,
                                            constant PlaneData* planes, uint planeCount,
                                            constant TriangleData* triangles, uint triangleCount,
+                                           constant RenderUniforms& uniforms,
                                            thread uint& rng) {
     float3 contribution = float3(0.0f);
     const float3 shadowOrigin = hit.position + hit.normal * 1e-3f;
@@ -273,7 +281,13 @@ static inline float3 direct_emissive_light(thread const HitInfo& hit,
         }
         float3 triContribution = float3(0.0f);
         for (uint sample = 0; sample < emissiveSamples; ++sample) {
-            float3 lightPoint = sample_triangle_point(tri, rng);
+            uint lightSampleIndex = uniforms.sampleIndex * emissiveSamples + sample;
+            float2 xi = sample_low_discrepancy(lightSampleIndex, hash_u32(rng + i * 131u + 0x9e3779b9u));
+            float su = sqrt(xi.x);
+            float b0 = 1.0f - su;
+            float b1 = xi.y * su;
+            float b2 = 1.0f - b0 - b1;
+            float3 lightPoint = tri.v0 * b0 + tri.v1 * b1 + tri.v2 * b2;
             float3 toLight = lightPoint - shadowOrigin;
             float dist2 = max(dot(toLight, toLight), 1e-5f);
             float dist = sqrt(dist2);
@@ -311,8 +325,8 @@ static inline bool trace_scene(float3 ro, float3 rd,
     return hit.hit;
 }
 
-static inline float3 cosine_sample_hemisphere(float3 normal, thread uint& rng) {
-    float2 xi = rand2(rng);
+static inline float3 cosine_sample_hemisphere(float3 normal, thread uint& rng, uint sampleIndex) {
+    float2 xi = sample_low_discrepancy(sampleIndex, hash_u32(rng + 0x68bc21ebu));
     float r = sqrt(xi.x);
     float phi = 2.0f * PI_F * xi.y;
     float x = r * cos(phi);
@@ -336,7 +350,7 @@ static inline float3 evaluate_direct_lighting(thread const HitInfo& hit,
     }
 
     float3 baseLightDir = normalize(float3(-0.55f, 0.88f, -0.32f));
-    float3 lightDir = sample_directional_light(baseLightDir, uniforms.lightAngularRadius, rng);
+    float3 lightDir = sample_directional_light(baseLightDir, uniforms.lightAngularRadius, rng, uniforms.sampleIndex);
     float3 shadowOrigin = hit.position + hit.normal * 1e-3f;
     bool shadowed = any_occluder(shadowOrigin, lightDir,
                                  spheres, sphereCount,
@@ -353,7 +367,7 @@ static inline float3 evaluate_direct_lighting(thread const HitInfo& hit,
                                                   spheres, sphereCount,
                                                   planes, planeCount,
                                                   triangles, triangleCount,
-                                                  rng);
+                                                  uniforms, rng);
 
     if (hit.materialType == MATERIAL_LAMBERTIAN) {
         float3 base = hit.albedo * (0.70f * directSun + 0.22f * wrapDiffuse + bouncedAmbient);
@@ -395,11 +409,11 @@ static inline float3 shade_hit(thread const HitInfo& hit,
     float bounceWeight = 1.0f;
 
     if (hit.materialType == MATERIAL_LAMBERTIAN) {
-        bounceDir = cosine_sample_hemisphere(hit.normal, rng);
+        bounceDir = cosine_sample_hemisphere(hit.normal, rng, uniforms.sampleIndex);
         bounceWeight = 0.55f;
     } else {
         float3 perfectReflect = reflect(rd, hit.normal);
-        float3 glossyDir = cosine_sample_hemisphere(perfectReflect, rng);
+        float3 glossyDir = cosine_sample_hemisphere(perfectReflect, rng, uniforms.sampleIndex + 17u);
         bounceDir = normalize(mix(perfectReflect, glossyDir, clamp(hit.roughness * 0.55f, 0.0f, 1.0f)));
         if (dot(bounceDir, hit.normal) <= 0.0f) {
             bounceDir = normalize(perfectReflect + hit.normal * 0.2f);
@@ -442,7 +456,7 @@ kernel void renderScene(device float4* outAccum [[buffer(0)]],
     if (gid.x >= uniforms.width || gid.y >= uniforms.height) return;
 
     uint rng = hash_u32(gid.x + gid.y * uniforms.width + uniforms.sampleIndex * 9781u + 0x68bc21ebu);
-    float2 jitter = rand2(rng) - 0.5f;
+    float2 jitter = sample_low_discrepancy(uniforms.sampleIndex, hash_u32(gid.x * 92821u ^ gid.y * 68917u ^ 0x1234abceu)) - 0.5f;
     float2 frag = float2(gid) + 0.5f + jitter;
     float2 uv = frag / float2(uniforms.width, uniforms.height);
     float2 screen = uv * 2.0f - 1.0f;
@@ -461,6 +475,7 @@ kernel void renderScene(device float4* outAccum [[buffer(0)]],
         ? shade_hit(hit, rd, spheres, uniforms.sphereCount, planes, uniforms.planeCount, triangles, uniforms.triangleCount, uniforms, rng)
         : sky_color(rd);
 
+    color = min(max(color, 0.0f), float3(8.0f));
     uint idx = gid.y * uniforms.width + gid.x;
-    outAccum[idx] += float4(max(color, 0.0f), 1.0f);
+    outAccum[idx] += float4(color, 1.0f);
 }
