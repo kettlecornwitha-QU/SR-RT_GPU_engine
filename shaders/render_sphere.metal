@@ -490,6 +490,10 @@ static inline float triangle_area(constant TriangleData& tri) {
     return 0.5f * length(cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
 }
 
+static inline float sphere_area(constant SphereData& sphere) {
+    return 4.0f * PI_F * sphere.radius * sphere.radius;
+}
+
 static inline float3 direct_emissive_light(thread const HitInfo& hit,
                                            constant SphereData* spheres, uint sphereCount,
                                            constant PlaneData* planes, uint planeCount,
@@ -500,6 +504,47 @@ static inline float3 direct_emissive_light(thread const HitInfo& hit,
     const float3 shadowOrigin = hit.position + hit.normal * 1e-3f;
     const float3 viewNormal = hit.normal;
     const uint emissiveSamples = 3;
+    for (uint i = 0; i < sphereCount; ++i) {
+        const constant SphereData& sphere = spheres[i];
+        if (sphere.materialType != MATERIAL_EMISSIVE || sphere.emissionStrength <= 0.0f) {
+            continue;
+        }
+
+        float area = sphere_area(sphere);
+        float3 sphereContribution = float3(0.0f);
+        for (uint sample = 0; sample < emissiveSamples; ++sample) {
+            uint lightSampleIndex = uniforms.sampleIndex * emissiveSamples + sample;
+            float2 xi = sample_low_discrepancy(lightSampleIndex, hash_u32(rng + i * 197u + 0x7f4a7c15u));
+            float z = 1.0f - 2.0f * xi.x;
+            float r = sqrt(max(0.0f, 1.0f - z * z));
+            float phi = 2.0f * PI_F * xi.y;
+            float3 sphereNormal = float3(r * cos(phi), z, r * sin(phi));
+            float3 lightPoint = sphere.center + sphere.radius * sphereNormal;
+            float3 toLight = lightPoint - shadowOrigin;
+            float dist2 = max(dot(toLight, toLight), 1e-5f);
+            float dist = sqrt(dist2);
+            float3 lightDir = toLight / dist;
+            float ndotl = max(dot(viewNormal, lightDir), 0.0f);
+            float lndot = max(dot(sphereNormal, -lightDir), 0.0f);
+            if (ndotl <= 0.0f || lndot <= 0.0f) {
+                continue;
+            }
+
+            bool occluded = any_occluder(shadowOrigin, lightDir,
+                                         spheres, sphereCount,
+                                         planes, planeCount,
+                                         triangles, triangleCount,
+                                         dist - 2e-3f);
+            if (occluded) {
+                continue;
+            }
+
+            float geom = (ndotl * lndot * area) / max(0.45f * PI_F * dist2, 1e-5f);
+            sphereContribution += sphere.albedo * sphere.emissionStrength * geom;
+        }
+        contribution += sphereContribution / float(emissiveSamples);
+    }
+
     for (uint i = 0; i < triangleCount; ++i) {
         const constant TriangleData& tri = triangles[i];
         if (tri.materialType != MATERIAL_EMISSIVE || tri.emissionStrength <= 0.0f) {
