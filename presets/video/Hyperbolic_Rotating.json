@@ -1,0 +1,102 @@
+{
+  "preset_schema_version": 2,
+  "options_schema_version": 1,
+  "scene_base": "row_scatter",
+  "scene_name": "row_scatter",
+  "palette": "balanced",
+  "fps": "30",
+  "total_frames": "int(2*fps*halfway)",
+  "definitions": [
+    "start = 76",
+    "end = -150",
+    "distance = abs(end - start)",
+    "c = 5",
+    "accel = 1",
+    "halfway = arcosh(accel*distance/(2*c^2) + 1)*c/accel"
+  ],
+  "camera_location": {
+    "rows": [
+      {
+        "fields": {
+          "x": "0",
+          "y": "1.2",
+          "z": "start - (cosh(accel*time/c) - 1)*c^2/accel"
+        },
+        "range_text": "int(fps*halfway)"
+      },
+      {
+        "fields": {
+          "x": "0",
+          "y": "1.2",
+          "z": "(cosh(accel/c*(time - 2*halfway)) - 1)*c^2/accel + end"
+        },
+        "range_text": ""
+      }
+    ]
+  },
+  "camera_velocity": {
+    "rows": [
+      {
+        "fields": {
+          "x": "0",
+          "y": "0",
+          "z": "-tanh(accel*time/c)"
+        },
+        "range_text": "int(fps*halfway)"
+      },
+      {
+        "fields": {
+          "x": "0",
+          "y": "0",
+          "z": "tanh(accel/c*(time - 2*halfway))"
+        },
+        "range_text": ""
+      }
+    ]
+  },
+  "camera_orientation": {
+    "rows": [
+      {
+        "fields": {
+          "pitch": "0",
+          "yaw": "frame/(int(2*fps*halfway)-1)"
+        },
+        "range_text": ""
+      }
+    ]
+  },
+  "settings": {
+    "width": 1920,
+    "height": 1080,
+    "spp": 64,
+    "max_depth": 5,
+    "adaptive": true,
+    "adaptive_threshold": "0.01",
+    "denoise": true,
+    "lighting_preset": "cornell-ceiling-plus-key",
+    "ppm_denoised_only": true,
+    "atmosphere_enabled": false,
+    "atmosphere_density": "0.03",
+    "atmosphere_color": "0.74,0.83,0.95",
+    "scatter_spacing_enabled": false,
+    "scatter_spacing": "1.55",
+    "scatter_max_radius_enabled": false,
+    "scatter_max_radius": "24",
+    "scatter_growth_scale_enabled": false,
+    "scatter_growth_scale": "2",
+    "big_scatter_spacing_enabled": false,
+    "big_scatter_spacing": "4.6",
+    "big_scatter_max_radius_enabled": false,
+    "big_scatter_max_radius": "100",
+    "row_scatter_xmax_enabled": false,
+    "row_scatter_xmax": "36",
+    "row_scatter_z_front_enabled": false,
+    "row_scatter_z_front": "135",
+    "row_scatter_z_back_enabled": false,
+    "row_scatter_z_back": "-158.68",
+    "row_scatter_replacement_rate_enabled": false,
+    "row_scatter_replacement_rate": "0.15",
+    "keep_frames": false
+  },
+  "preset_name": "Hyperbolic Rotating"
+}
