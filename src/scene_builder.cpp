@@ -75,7 +75,7 @@ SceneDescription makeWideScene() {
     SceneDescription scene;
     scene.name = "wide";
     scene.label = "Wide";
-    scene.description = "Wider framing with mixed Lambertian/metal surfaces, emissive accents, and hard shadows.";
+    scene.description = "Wider framing with mixed Lambertian/metal surfaces, emissive accents, hard shadows, and multisampled direct lighting.";
     scene.camera = makeCamera(simd_make_float3(0.0f, 1.35f, 3.8f), simd_make_float3(0.0f, -0.35f, -4.4f), 1.7f, 1.0f);
     scene.planes.push_back(makeGroundPlane(-1.0f, simd_make_float3(0.90f, 0.90f, 0.92f), simd_make_float3(0.22f, 0.24f, 0.28f), 1.4f));
     scene.spheres = {
@@ -119,10 +119,11 @@ std::vector<std::string> availableSceneNames() {
 std::string buildOptionsSchemaJson() {
     std::ostringstream out;
     out << "{\n";
-    out << "  \"schema_version\": 2,\n";
+    out << "  \"schema_version\": 3,\n";
     out << "  \"render\": {\n";
     out << "    \"width\": 960,\n";
-    out << "    \"height\": 540\n";
+    out << "    \"height\": 540,\n";
+    out << "    \"spp\": 16\n";
     out << "  },\n";
     out << "  \"choices\": {\n";
     out << "    \"scene\": [\"starter\", \"wide\"]\n";
@@ -135,7 +136,9 @@ std::string buildOptionsSchemaJson() {
     out << "    \"scene_registry\": true,\n";
     out << "    \"save_png\": false,\n";
     out << "    \"material_types\": [\"lambertian\", \"metal\", \"emissive\"],\n";
-    out << "    \"hard_shadows\": true\n";
+    out << "    \"hard_shadows\": true,\n";
+    out << "    \"multisampling\": true,\n";
+    out << "    \"softer_directional_light\": true\n";
     out << "  }\n";
     out << "}\n";
     return out.str();

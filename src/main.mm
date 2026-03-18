@@ -24,6 +24,10 @@ static bool parseArgs(int argc, char** argv, RenderOptions& cfg) {
             const char* value = requireValue("--height");
             if (!value) return false;
             cfg.height = static_cast<uint32_t>(std::stoul(value));
+        } else if (arg == "--spp") {
+            const char* value = requireValue("--spp");
+            if (!value) return false;
+            cfg.spp = static_cast<uint32_t>(std::stoul(value));
         } else if (arg == "--output") {
             const char* value = requireValue("--output");
             if (!value) return false;
@@ -37,7 +41,7 @@ static bool parseArgs(int argc, char** argv, RenderOptions& cfg) {
         } else if (arg == "--print-scene-registry") {
             cfg.print_scene_registry = true;
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: sr_rt_gpu [--scene name] [--width N] [--height N] [--output path] [--print-options-schema] [--print-scene-registry]\n";
+            std::cout << "Usage: sr_rt_gpu [--scene name] [--width N] [--height N] [--spp N] [--output path] [--print-options-schema] [--print-scene-registry]\n";
             return false;
         } else {
             std::cerr << "Unknown argument: " << arg << "\n";
@@ -76,6 +80,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::cout << "Wrote " << cfg.output << " (" << cfg.width << "x" << cfg.height << ") using scene '" << scene.name << "'\n";
+    std::cout << "Wrote " << cfg.output << " (" << cfg.width << "x" << cfg.height << ", spp=" << cfg.spp << ") using scene '" << scene.name << "'\n";
     return 0;
 }

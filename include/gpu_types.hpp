@@ -15,6 +15,7 @@ enum MaterialType : uint32_t {
 struct RenderOptions {
     uint32_t width = 960;
     uint32_t height = 540;
+    uint32_t spp = 16;
     std::string output = "outputs/metal_starter.ppm";
     std::string scene = "starter";
     bool print_options_schema = false;
@@ -27,8 +28,11 @@ struct RenderUniforms {
     uint32_t sphereCount;
     uint32_t planeCount;
     uint32_t triangleCount;
+    uint32_t samplesPerPixel;
+    uint32_t sampleIndex;
     float time;
-    simd_float2 pad0;
+    float lightAngularRadius;
+    simd_float3 pad0;
 };
 
 struct CameraData {

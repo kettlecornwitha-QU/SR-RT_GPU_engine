@@ -4,6 +4,7 @@ using namespace metal;
 constant uint MATERIAL_LAMBERTIAN = 0;
 constant uint MATERIAL_METAL = 1;
 constant uint MATERIAL_EMISSIVE = 2;
+constant float PI_F = 3.14159265358979323846f;
 
 struct RenderUniforms {
     uint width;
@@ -11,8 +12,11 @@ struct RenderUniforms {
     uint sphereCount;
     uint planeCount;
     uint triangleCount;
+    uint samplesPerPixel;
+    uint sampleIndex;
     float time;
-    float2 pad0;
+    float lightAngularRadius;
+    float3 pad0;
 };
 
 struct CameraData {
@@ -84,6 +88,45 @@ static inline void init_hit(thread HitInfo& hit) {
     hit.materialType = MATERIAL_LAMBERTIAN;
     hit.emissionStrength = 0.0f;
     hit.hit = false;
+}
+
+static inline uint hash_u32(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+static inline float rand01(thread uint& state) {
+    state = hash_u32(state + 0x9e3779b9u);
+    return float(state & 0x00ffffffu) / float(0x01000000u);
+}
+
+static inline float2 rand2(thread uint& state) {
+    return float2(rand01(state), rand01(state));
+}
+
+static inline void build_basis(float3 n, thread float3& t, thread float3& b) {
+    float3 up = abs(n.y) < 0.999f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+    t = normalize(cross(up, n));
+    b = normalize(cross(n, t));
+}
+
+static inline float3 sample_directional_light(float3 baseDir, float angularRadius, thread uint& rng) {
+    if (angularRadius <= 0.0f) {
+        return normalize(baseDir);
+    }
+    float2 xi = rand2(rng);
+    float r = angularRadius * sqrt(xi.x);
+    float phi = 2.0f * PI_F * xi.y;
+    float2 disk = r * float2(cos(phi), sin(phi));
+
+    float3 tangent;
+    float3 bitangent;
+    build_basis(baseDir, tangent, bitangent);
+    return normalize(baseDir + tangent * disk.x + bitangent * disk.y);
 }
 
 static inline bool intersect_sphere(float3 ro, float3 rd, constant SphereData& sphere, thread HitInfo& hit) {
@@ -183,41 +226,63 @@ static inline bool any_occluder(float3 ro, float3 rd,
     return false;
 }
 
+static inline float3 sky_color(float3 dir) {
+    float t = clamp(0.5f * (dir.y + 1.0f), 0.0f, 1.0f);
+    return mix(float3(0.96f, 0.97f, 1.0f), float3(0.46f, 0.66f, 0.94f), t);
+}
+
+static inline float3 ambient_fill(thread const HitInfo& hit) {
+    float hemi = clamp(hit.normal.y * 0.5f + 0.5f, 0.0f, 1.0f);
+    float3 coolSky = float3(0.30f, 0.38f, 0.48f);
+    float3 warmGround = float3(0.16f, 0.14f, 0.10f);
+    float3 hemiTint = mix(warmGround, coolSky, hemi);
+    return hit.albedo * hemiTint * 0.28f;
+}
+
 static inline float3 shade_hit(thread const HitInfo& hit,
-                               float3 ro,
                                float3 rd,
                                constant SphereData* spheres, uint sphereCount,
                                constant PlaneData* planes, uint planeCount,
-                               constant TriangleData* triangles, uint triangleCount) {
+                               constant TriangleData* triangles, uint triangleCount,
+                               constant RenderUniforms& uniforms,
+                               thread uint& rng) {
     if (hit.materialType == MATERIAL_EMISSIVE) {
         return hit.albedo * hit.emissionStrength;
     }
 
-    float3 lightDir = normalize(float3(-0.6f, 0.9f, -0.4f));
-    float3 toLight = lightDir;
-    float shadowDistance = 1e6f;
+    float3 baseLightDir = normalize(float3(-0.55f, 0.88f, -0.32f));
+    float3 lightDir = sample_directional_light(baseLightDir, uniforms.lightAngularRadius, rng);
     float3 shadowOrigin = hit.position + hit.normal * 1e-3f;
-    bool shadowed = any_occluder(shadowOrigin, toLight, spheres, sphereCount, planes, planeCount, triangles, triangleCount, shadowDistance);
+    bool shadowed = any_occluder(shadowOrigin, lightDir,
+                                 spheres, sphereCount,
+                                 planes, planeCount,
+                                 triangles, triangleCount,
+                                 1e6f);
 
     float diffuse = max(dot(hit.normal, lightDir), 0.0f);
-    float shadowFactor = shadowed ? 0.18f : 1.0f;
-    float3 ambient = hit.albedo * 0.08f;
+    float visibility = shadowed ? 0.10f : 1.0f;
+    float wrapDiffuse = max((dot(hit.normal, lightDir) + 0.25f) / 1.25f, 0.0f);
+    float3 directSun = float3(1.05f, 0.99f, 0.92f) * diffuse * visibility;
+    float3 bouncedAmbient = ambient_fill(hit);
 
     if (hit.materialType == MATERIAL_LAMBERTIAN) {
-        return ambient + hit.albedo * (0.92f * diffuse * shadowFactor);
+        float3 base = hit.albedo * (0.70f * directSun + 0.22f * wrapDiffuse + bouncedAmbient);
+        return base;
     }
 
     float3 viewDir = normalize(-rd);
     float3 reflected = reflect(-lightDir, hit.normal);
-    float shininess = mix(80.0f, 8.0f, clamp(hit.roughness, 0.0f, 1.0f));
+    float shininess = mix(90.0f, 10.0f, clamp(hit.roughness, 0.0f, 1.0f));
     float specular = pow(max(dot(viewDir, reflected), 0.0f), shininess);
-    float metalDiffuse = 0.12f * diffuse;
-    float3 metalBase = hit.albedo * (0.18f + metalDiffuse * shadowFactor);
-    float3 metalSpec = hit.albedo * (1.4f * specular * shadowFactor);
-    return ambient * 0.5f + metalBase + metalSpec;
+    float fresnel = pow(1.0f - max(dot(viewDir, hit.normal), 0.0f), 5.0f);
+    float3 reflectedSky = sky_color(reflect(rd, hit.normal));
+    float3 metalBase = hit.albedo * (0.18f + 0.30f * bouncedAmbient + 0.16f * wrapDiffuse * visibility);
+    float3 metalSpec = mix(hit.albedo, float3(1.0f), 0.45f) * (1.6f * specular * visibility);
+    float3 environment = reflectedSky * (0.18f + 0.35f * fresnel) * (1.0f - hit.roughness * 0.55f);
+    return metalBase + metalSpec + environment;
 }
 
-kernel void renderScene(device uchar4* outPixels [[buffer(0)]],
+kernel void renderScene(device float4* outAccum [[buffer(0)]],
                         constant RenderUniforms& uniforms [[buffer(1)]],
                         constant CameraData& camera [[buffer(2)]],
                         constant SphereData* spheres [[buffer(3)]],
@@ -226,7 +291,9 @@ kernel void renderScene(device uchar4* outPixels [[buffer(0)]],
                         uint2 gid [[thread_position_in_grid]]) {
     if (gid.x >= uniforms.width || gid.y >= uniforms.height) return;
 
-    float2 frag = float2(gid) + 0.5f;
+    uint rng = hash_u32(gid.x + gid.y * uniforms.width + uniforms.sampleIndex * 9781u + 0x68bc21ebu);
+    float2 jitter = rand2(rng) - 0.5f;
+    float2 frag = float2(gid) + 0.5f + jitter;
     float2 uv = frag / float2(uniforms.width, uniforms.height);
     float2 screen = uv * 2.0f - 1.0f;
     screen.y = -screen.y;
@@ -242,16 +309,10 @@ kernel void renderScene(device uchar4* outPixels [[buffer(0)]],
     for (uint i = 0; i < uniforms.planeCount; ++i) intersect_plane(ro, rd, planes[i], hit);
     for (uint i = 0; i < uniforms.triangleCount; ++i) intersect_triangle(ro, rd, triangles[i], hit);
 
-    float3 color;
-    if (hit.hit) {
-        color = shade_hit(hit, ro, rd, spheres, uniforms.sphereCount, planes, uniforms.planeCount, triangles, uniforms.triangleCount);
-    } else {
-        float t = 0.5f * (rd.y + 1.0f);
-        color = mix(float3(0.95f, 0.97f, 1.0f), float3(0.40f, 0.60f, 0.90f), t);
-    }
+    float3 color = hit.hit
+        ? shade_hit(hit, rd, spheres, uniforms.sphereCount, planes, uniforms.planeCount, triangles, uniforms.triangleCount, uniforms, rng)
+        : sky_color(rd);
 
-    color = clamp(color, 0.0f, 1.0f);
     uint idx = gid.y * uniforms.width + gid.x;
-    uchar3 rgb = uchar3(color * 255.0f);
-    outPixels[idx] = uchar4(rgb, 255);
+    outAccum[idx] += float4(max(color, 0.0f), 1.0f);
 }
