@@ -112,6 +112,38 @@ SceneDescription makeMaterialsScene() {
     return scene;
 }
 
+SceneDescription makeRoughnessScene() {
+    SceneDescription scene;
+    scene.name = "roughness";
+    scene.label = "Roughness";
+    scene.description = "Roughness comparison scene with checker ground and a dark backdrop, showing metal and dielectric spheres from smooth to rough under emissive sphere lighting.";
+    scene.camera = makeCamera(simd_make_float3(0.0f, 1.0f, 4.6f), simd_make_float3(0.0f, 0.15f, -4.9f), 1.95f, 0.95f);
+    scene.planes = {
+        makeGroundPlane(-1.70f, simd_make_float3(0.90f, 0.90f, 0.92f), simd_make_float3(0.30f, 0.32f, 0.36f), 1.7f, 0.35f),
+    };
+    scene.spheres = {
+        makeSphere(simd_make_float3(-3.4f, 1.30f, -5.9f), 0.95f, simd_make_float3(0.82f, 0.84f, 0.88f), 0.02f, MATERIAL_METAL),
+        makeSphere(simd_make_float3(-1.15f, 1.30f, -5.3f), 0.95f, simd_make_float3(0.82f, 0.84f, 0.88f), 0.18f, MATERIAL_METAL),
+        makeSphere(simd_make_float3(1.15f, 1.30f, -5.3f), 0.95f, simd_make_float3(0.82f, 0.84f, 0.88f), 0.38f, MATERIAL_METAL),
+        makeSphere(simd_make_float3(3.4f, 1.30f, -5.9f), 0.95f, simd_make_float3(0.82f, 0.84f, 0.88f), 0.62f, MATERIAL_METAL),
+
+        makeSphere(simd_make_float3(-3.4f, -0.75f, -5.9f), 0.95f, simd_make_float3(0.88f, 0.95f, 1.00f), 0.01f, MATERIAL_DIELECTRIC),
+        makeSphere(simd_make_float3(-1.15f, -0.75f, -5.3f), 0.95f, simd_make_float3(0.88f, 0.95f, 1.00f), 0.12f, MATERIAL_DIELECTRIC),
+        makeSphere(simd_make_float3(1.15f, -0.75f, -5.3f), 0.95f, simd_make_float3(0.88f, 0.95f, 1.00f), 0.26f, MATERIAL_DIELECTRIC),
+        makeSphere(simd_make_float3(3.4f, -0.75f, -5.9f), 0.95f, simd_make_float3(0.88f, 0.95f, 1.00f), 0.44f, MATERIAL_DIELECTRIC),
+
+        makeSphere(simd_make_float3(-2.15f, 3.15f, -6.4f), 0.78f, simd_make_float3(1.00f, 0.94f, 0.80f), 0.0f, MATERIAL_EMISSIVE, 4.8f),
+        makeSphere(simd_make_float3(2.35f, 2.95f, -6.0f), 0.64f, simd_make_float3(0.76f, 0.86f, 1.00f), 0.0f, MATERIAL_EMISSIVE, 3.6f),
+        makeSphere(simd_make_float3(-2.25f, -0.10f, -9.4f), 0.55f, simd_make_float3(0.86f, 0.22f, 0.18f), 0.18f, MATERIAL_LAMBERTIAN),
+        makeSphere(simd_make_float3(2.15f, -0.05f, -9.0f), 0.60f, simd_make_float3(0.18f, 0.46f, 0.84f), 0.22f, MATERIAL_COATED),
+    };
+    scene.triangles = {
+        makeTriangle(simd_make_float3(-6.4f, -1.75f, -11.0f), simd_make_float3(-6.4f, 5.0f, -11.0f), simd_make_float3(6.4f, 5.0f, -11.0f), simd_make_float3(0.17f, 0.18f, 0.22f), 0.75f, MATERIAL_LAMBERTIAN),
+        makeTriangle(simd_make_float3(-6.4f, -1.75f, -11.0f), simd_make_float3(6.4f, 5.0f, -11.0f), simd_make_float3(6.4f, -1.75f, -11.0f), simd_make_float3(0.17f, 0.18f, 0.22f), 0.75f, MATERIAL_LAMBERTIAN),
+    };
+    return scene;
+}
+
 std::string escapeJson(const std::string& text) {
     std::ostringstream out;
     for (char c : text) {
@@ -130,11 +162,12 @@ SceneDescription buildScene(const std::string& scene_name) {
     if (scene_name == "starter") return makeStarterScene();
     if (scene_name == "wide") return makeWideScene();
     if (scene_name == "materials") return makeMaterialsScene();
+    if (scene_name == "roughness") return makeRoughnessScene();
     throw std::runtime_error("Unknown scene: " + scene_name);
 }
 
 std::vector<std::string> availableSceneNames() {
-    return {"starter", "wide", "materials"};
+    return {"starter", "wide", "materials", "roughness"};
 }
 
 std::string buildOptionsSchemaJson() {
@@ -149,7 +182,7 @@ std::string buildOptionsSchemaJson() {
     out << "    \"denoise_strength\": 1.0\n";
     out << "  },\n";
     out << "  \"choices\": {\n";
-    out << "    \"scene\": [\"starter\", \"wide\", \"materials\"]\n";
+    out << "    \"scene\": [\"starter\", \"wide\", \"materials\", \"roughness\"]\n";
     out << "  },\n";
     out << "  \"defaults\": {\n";
     out << "    \"scene\": \"starter\",\n";
@@ -173,7 +206,7 @@ std::string buildOptionsSchemaJson() {
 }
 
 std::string buildSceneRegistryJson() {
-    const auto scenes = std::vector<SceneDescription>{makeStarterScene(), makeWideScene(), makeMaterialsScene()};
+    const auto scenes = std::vector<SceneDescription>{makeStarterScene(), makeWideScene(), makeMaterialsScene(), makeRoughnessScene()};
     std::ostringstream out;
     out << "{\n";
     out << "  \"schema_version\": 1,\n";
