@@ -322,6 +322,12 @@ static inline bool refract_safe(float3 uv, float3 n, float eta, thread float3& r
     return true;
 }
 
+static inline float remap_micro_roughness(float roughness, float scale = 1.0f) {
+    float alpha = clamp(roughness, 0.0f, 1.0f);
+    alpha *= alpha;
+    return clamp(alpha * scale, 0.0f, 1.0f);
+}
+
 static inline LightingTerms compute_lighting_terms(thread const HitInfo& hit,
                                                    constant SphereData* spheres, uint sphereCount,
                                                    constant PlaneData* planes, uint planeCount,
@@ -414,7 +420,8 @@ static inline BounceSample sample_coated_bounce(thread const HitInfo& hit,
     sample.origin = hit.position + hit.normal * 1e-3f;
     float3 glossyLobe = cosine_sample_hemisphere(hit.normal, rng, uniforms.sampleIndex + 29u);
     float3 perfectReflect = reflect(rd, hit.normal);
-    sample.direction = normalize(mix(perfectReflect, glossyLobe, clamp(hit.roughness * 0.35f, 0.0f, 1.0f)));
+    float glossyMix = remap_micro_roughness(hit.roughness, 0.70f);
+    sample.direction = normalize(mix(perfectReflect, glossyLobe, glossyMix));
     if (dot(sample.direction, hit.normal) <= 0.0f) {
         sample.direction = perfectReflect;
     }
@@ -442,11 +449,13 @@ static inline BounceSample sample_dielectric_bounce(thread const HitInfo& hit,
 
     if (chooseReflect) {
         float3 glossyReflect = cosine_sample_hemisphere(perfectReflect, rng, uniforms.sampleIndex + 43u);
-        sample.direction = normalize(mix(perfectReflect, glossyReflect, clamp(hit.roughness * 0.55f, 0.0f, 1.0f)));
+        float glossyMix = remap_micro_roughness(hit.roughness, 0.95f);
+        sample.direction = normalize(mix(perfectReflect, glossyReflect, glossyMix));
         sample.origin = hit.position + hit.normal * 1e-3f;
     } else {
         float3 glossyRefract = cosine_sample_hemisphere(refracted, rng, uniforms.sampleIndex + 47u);
-        sample.direction = normalize(mix(refracted, glossyRefract, clamp(hit.roughness * 0.60f, 0.0f, 1.0f)));
+        float glossyMix = remap_micro_roughness(hit.roughness, 1.10f);
+        sample.direction = normalize(mix(refracted, glossyRefract, glossyMix));
         sample.origin = hit.position - hit.normal * 1e-3f;
     }
     sample.weight = 0.96f;
@@ -473,11 +482,13 @@ static inline float3 sample_dielectric_direction(thread const HitInfo& hit,
 
     if (choseReflection) {
         float3 glossyReflect = cosine_sample_hemisphere(perfectReflect, rng, uniforms.sampleIndex + 43u);
-        return normalize(mix(perfectReflect, glossyReflect, clamp(hit.roughness * 0.55f, 0.0f, 1.0f)));
+        float glossyMix = remap_micro_roughness(hit.roughness, 0.95f);
+        return normalize(mix(perfectReflect, glossyReflect, glossyMix));
     }
 
     float3 glossyRefract = cosine_sample_hemisphere(refracted, rng, uniforms.sampleIndex + 47u);
-    return normalize(mix(refracted, glossyRefract, clamp(hit.roughness * 0.60f, 0.0f, 1.0f)));
+    float glossyMix = remap_micro_roughness(hit.roughness, 1.10f);
+    return normalize(mix(refracted, glossyRefract, glossyMix));
 }
 
 static inline BounceSample sample_metal_bounce(thread const HitInfo& hit,
@@ -488,7 +499,8 @@ static inline BounceSample sample_metal_bounce(thread const HitInfo& hit,
     sample.origin = hit.position + hit.normal * 1e-3f;
     float3 perfectReflect = reflect(rd, hit.normal);
     float3 glossyDir = cosine_sample_hemisphere(perfectReflect, rng, uniforms.sampleIndex + 17u);
-    sample.direction = normalize(mix(perfectReflect, glossyDir, clamp(hit.roughness * 0.55f, 0.0f, 1.0f)));
+    float glossyMix = remap_micro_roughness(hit.roughness, 0.95f);
+    sample.direction = normalize(mix(perfectReflect, glossyDir, glossyMix));
     if (dot(sample.direction, hit.normal) <= 0.0f) {
         sample.direction = normalize(perfectReflect + hit.normal * 0.2f);
     }
