@@ -86,6 +86,8 @@ static bool parseArgs(int argc, char** argv, RenderOptions& cfg) {
             cfg.environment_exposure = std::stof(value);
         } else if (arg == "--adaptive-sampling") {
             cfg.adaptive_sampling = true;
+        } else if (arg == "--oidn-denoise") {
+            cfg.oidn_denoise = true;
         } else if (arg == "--no-denoise") {
             cfg.denoise = false;
         } else if (arg == "--save-guide-buffers") {
@@ -95,7 +97,7 @@ static bool parseArgs(int argc, char** argv, RenderOptions& cfg) {
         } else if (arg == "--print-scene-registry") {
             cfg.print_scene_registry = true;
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: sr_rt_gpu [--scene name] [--width N] [--height N] [--spp N] [--adaptive-sampling] [--adaptive-min-spp N] [--adaptive-threshold V] [--environment-map path] [--environment-rotation deg] [--environment-exposure V] [--tonemap filmic|reinhard|linear] [--display-exposure V] [--tone-contrast V] [--tone-saturation V] [--output-gamma V] [--output path] [--firefly-clamp V] [--denoise-strength V] [--no-denoise] [--save-guide-buffers] [--print-options-schema] [--print-scene-registry]\n";
+            std::cout << "Usage: sr_rt_gpu [--scene name] [--width N] [--height N] [--spp N] [--adaptive-sampling] [--adaptive-min-spp N] [--adaptive-threshold V] [--environment-map path] [--environment-rotation deg] [--environment-exposure V] [--tonemap filmic|reinhard|linear] [--display-exposure V] [--tone-contrast V] [--tone-saturation V] [--output-gamma V] [--output path] [--firefly-clamp V] [--denoise-strength V] [--oidn-denoise] [--no-denoise] [--save-guide-buffers] [--print-options-schema] [--print-scene-registry]\n";
             return false;
         } else {
             std::cerr << "Unknown argument: " << arg << "\n";
@@ -144,6 +146,9 @@ int main(int argc, char** argv) {
     if (cfg.adaptive_sampling) {
         std::cout << "Adaptive sampling enabled with min_spp=" << cfg.adaptive_min_spp
                   << " and threshold=" << cfg.adaptive_threshold << "\n";
+    }
+    if (cfg.oidn_denoise) {
+        std::cout << "OIDN denoise enabled\n";
     }
     if (!cfg.environment_map.empty()) {
         std::cout << "Environment map: " << cfg.environment_map

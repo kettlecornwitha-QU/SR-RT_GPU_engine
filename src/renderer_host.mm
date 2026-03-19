@@ -7,7 +7,9 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -61,6 +63,11 @@ std::string readTextFile(const fs::path& path) {
     std::ostringstream ss;
     ss << in.rdbuf();
     return ss.str();
+}
+
+fs::path tempStem(const std::string& prefix) {
+    const auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    return fs::temp_directory_path() / (prefix + std::to_string(now));
 }
 
 std::string trim(std::string_view value) {
@@ -243,6 +250,176 @@ bool loadEnvironmentImage(const fs::path& path, ImageData& image) {
         return loadPPMImage(path, image);
     }
     return false;
+}
+
+bool writePFM(const fs::path& path, const std::vector<simd_float3>& image, uint32_t width, uint32_t height) {
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    out << "PF\n" << width << " " << height << "\n-1.0\n";
+    for (int y = static_cast<int>(height) - 1; y >= 0; --y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            const simd_float3& c = image[static_cast<size_t>(y) * width + x];
+            const float rgb[3] = {c.x, c.y, c.z};
+            out.write(reinterpret_cast<const char*>(rgb), sizeof(rgb));
+        }
+    }
+    return static_cast<bool>(out);
+}
+
+bool readPFM(const fs::path& path, uint32_t width, uint32_t height, std::vector<simd_float3>& image) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::string magic;
+    in >> magic;
+    if (magic != "PF") return false;
+    int fileWidth = 0;
+    int fileHeight = 0;
+    float scale = 0.0f;
+    in >> fileWidth >> fileHeight >> scale;
+    in.get();
+    if (!in || fileWidth != static_cast<int>(width) || fileHeight != static_cast<int>(height)) return false;
+
+    image.assign(static_cast<size_t>(width) * height, simd_make_float3(0.0f, 0.0f, 0.0f));
+    for (int y = static_cast<int>(height) - 1; y >= 0; --y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            float rgb[3] = {0.0f, 0.0f, 0.0f};
+            in.read(reinterpret_cast<char*>(rgb), sizeof(rgb));
+            if (!in) return false;
+            image[static_cast<size_t>(y) * width + x] = simd_make_float3(rgb[0], rgb[1], rgb[2]);
+        }
+    }
+    return true;
+}
+
+std::vector<fs::path> oidnCandidatePaths() {
+    std::vector<fs::path> candidates;
+    if (const char* raw = std::getenv("SR_RT_OIDN_DENOISE_BIN")) {
+        if (*raw) candidates.emplace_back(raw);
+    }
+    if (const char* pathEnv = std::getenv("PATH")) {
+        std::stringstream ss(pathEnv);
+        std::string segment;
+        while (std::getline(ss, segment, ':')) {
+            if (!segment.empty()) candidates.push_back(fs::path(segment) / "oidnDenoise");
+        }
+    }
+    if (const char* home = std::getenv("HOME")) {
+        fs::path homePath(home);
+        candidates.push_back(homePath / "deps/oidn-2.4.1.arm64.macos/bin/oidnDenoise");
+        candidates.push_back(homePath / "deps/oidn/bin/oidnDenoise");
+    }
+    return candidates;
+}
+
+fs::path findOidnBinary() {
+    std::error_code ec;
+    for (const fs::path& candidate : oidnCandidatePaths()) {
+        if (candidate.empty()) continue;
+        fs::path resolved = fs::weakly_canonical(candidate, ec);
+        if (ec) {
+            ec.clear();
+            resolved = candidate;
+        }
+        if (fs::exists(resolved) && fs::is_regular_file(resolved)) {
+            return resolved;
+        }
+    }
+    return {};
+}
+
+fs::path oidnLibraryDir(const fs::path& oidnBinary) {
+    std::error_code ec;
+    fs::path siblingLib = oidnBinary.parent_path().parent_path() / "lib";
+    if (fs::exists(siblingLib, ec) && fs::is_directory(siblingLib, ec)) {
+        return siblingLib;
+    }
+    return oidnBinary.parent_path();
+}
+
+bool runOidnDenoise(const std::vector<simd_float3>& beauty,
+                    const std::vector<simd_float3>& albedo,
+                    const std::vector<simd_float3>& normal,
+                    uint32_t width,
+                    uint32_t height,
+                    std::vector<simd_float3>& denoised,
+                    std::string& message) {
+    const fs::path oidnBinary = findOidnBinary();
+    if (oidnBinary.empty()) {
+        message = "oidnDenoise not found. Set SR_RT_OIDN_DENOISE_BIN or install OIDN under ~/deps.";
+        return false;
+    }
+
+    const fs::path stem = tempStem("sr_rt_gpu_oidn_");
+    const fs::path colorPath = stem.string() + "_color.pfm";
+    const fs::path albedoPath = stem.string() + "_albedo.pfm";
+    const fs::path normalPath = stem.string() + "_normal.pfm";
+    const fs::path outputPath = stem.string() + "_output.pfm";
+    const fs::path logPath = stem.string() + "_oidn.log";
+
+    auto cleanup = [&]() {
+        std::error_code ignored;
+        fs::remove(colorPath, ignored);
+        fs::remove(albedoPath, ignored);
+        fs::remove(normalPath, ignored);
+        fs::remove(outputPath, ignored);
+        fs::remove(logPath, ignored);
+    };
+
+    if (!writePFM(colorPath, beauty, width, height) ||
+        !writePFM(albedoPath, albedo, width, height) ||
+        !writePFM(normalPath, normal, width, height)) {
+        cleanup();
+        message = "Failed to write temporary PFM files for oidnDenoise.";
+        return false;
+    }
+
+    const fs::path libDir = oidnLibraryDir(oidnBinary);
+    const char* previousDyld = std::getenv("DYLD_LIBRARY_PATH");
+    std::string previousDyldValue = previousDyld ? previousDyld : "";
+    if (!libDir.empty()) {
+        setenv("DYLD_LIBRARY_PATH", libDir.string().c_str(), 1);
+    }
+
+    std::ostringstream cmd;
+    cmd << "\"" << oidnBinary.string() << "\""
+        << " --hdr \"" << colorPath.string() << "\""
+        << " --alb \"" << albedoPath.string() << "\""
+        << " --nrm \"" << normalPath.string() << "\""
+        << " -o \"" << outputPath.string() << "\""
+        << " --clean_aux"
+        << " --verbose 2"
+        << " > \"" << logPath.string() << "\" 2>&1";
+
+    const int result = std::system(cmd.str().c_str());
+
+    if (!libDir.empty()) {
+        if (previousDyld) {
+            setenv("DYLD_LIBRARY_PATH", previousDyldValue.c_str(), 1);
+        } else {
+            unsetenv("DYLD_LIBRARY_PATH");
+        }
+    }
+
+    if (result != 0) {
+        std::ifstream log(logPath);
+        std::ostringstream details;
+        if (log) details << log.rdbuf();
+        cleanup();
+        message = "oidnDenoise subprocess failed";
+        if (!details.str().empty()) {
+            message += ": " + details.str();
+        }
+        return false;
+    }
+
+    const bool ok = readPFM(outputPath, width, height, denoised);
+    cleanup();
+    if (!ok) {
+        message = "Failed to read oidnDenoise output.";
+        return false;
+    }
+    message = "OIDN denoise complete";
+    return true;
 }
 
 id<MTLTexture> makeEnvironmentTexture(id<MTLDevice> device, const ImageData& image) {
@@ -650,7 +827,19 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
             1.0f,
             1.0f,
         };
-        if (options.denoise && options.denoise_strength > 0.0f) {
+        if (options.oidn_denoise) {
+            std::vector<simd_float3> normalGuide(pixelCount);
+            std::vector<simd_float3> albedoGuide(pixelCount);
+            for (size_t i = 0; i < pixelCount; ++i) {
+                normalGuide[i] = guides[i].normal;
+                albedoGuide[i] = guides[i].albedo;
+            }
+            std::string oidnMessage;
+            if (!runOidnDenoise(beauty, albedoGuide, normalGuide, options.width, options.height, finalBeauty, oidnMessage)) {
+                if (error_message) *error_message = oidnMessage;
+                return false;
+            }
+        } else if (options.denoise && options.denoise_strength > 0.0f) {
             const float baseColorSigma = std::max(0.08f, 0.45f * options.denoise_strength);
             const float baseAlbedoSigma = std::max(0.06f, 0.30f * options.denoise_strength);
             const float baseNormalSigma = std::max(0.04f, 0.18f * options.denoise_strength);

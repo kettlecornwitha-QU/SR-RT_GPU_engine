@@ -198,6 +198,7 @@ std::string buildOptionsSchemaJson() {
     out << "    \"environment_map\": \"\",\n";
     out << "    \"tonemap\": \"filmic\",\n";
     out << "    \"denoise\": true,\n";
+    out << "    \"oidn_denoise\": false,\n";
     out << "    \"adaptive_sampling\": false,\n";
     out << "    \"save_guide_buffers\": false\n";
     out << "  },\n";
@@ -208,6 +209,7 @@ std::string buildOptionsSchemaJson() {
     out << "    \"adaptive_sampling\": true,\n";
     out << "    \"environment_maps\": [\".hdr\", \".ppm\"],\n";
     out << "    \"tonemap_modes\": [\"filmic\", \"reinhard\", \"linear\"],\n";
+    out << "    \"oidn_denoise\": \"optional_external\",\n";
     out << "    \"material_types\": [\"lambertian\", \"metal\", \"emissive\", \"dielectric\", \"coated\"],\n";
     out << "    \"hard_shadows\": true,\n";
     out << "    \"multisampling\": true,\n";

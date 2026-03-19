@@ -33,6 +33,7 @@ struct RenderOptions {
     float output_gamma = 2.2f;
     std::string tonemap = "filmic";
     bool denoise = true;
+    bool oidn_denoise = false;
     bool adaptive_sampling = false;
     bool save_guide_buffers = false;
     bool print_options_schema = false;
