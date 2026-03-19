@@ -11,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -21,6 +22,8 @@ namespace {
 struct GuidePixel {
     simd_float3 normal;
     simd_float3 albedo;
+    float depth;
+    float roughness;
 };
 
 std::string readTextFile(const fs::path& path) {
@@ -109,6 +112,8 @@ std::vector<simd_float3> denoiseBeauty(const std::vector<simd_float3>& beauty,
     const float colorSigma = std::max(0.08f, 0.45f * strength);
     const float albedoSigma = std::max(0.06f, 0.30f * strength);
     const float normalSigma = std::max(0.04f, 0.18f * strength);
+    const float depthSigma = std::max(0.03f, 0.14f * strength);
+    const float roughnessSigma = std::max(0.02f, 0.12f * strength);
 
     for (uint32_t y = 0; y < height; ++y) {
         for (uint32_t x = 0; x < width; ++x) {
@@ -116,6 +121,8 @@ std::vector<simd_float3> denoiseBeauty(const std::vector<simd_float3>& beauty,
             const simd_float3 centerColor = beauty[idx];
             const simd_float3 centerAlbedo = guides[idx].albedo;
             const simd_float3 centerNormal = guides[idx].normal;
+            const float centerDepth = guides[idx].depth;
+            const float centerRoughness = guides[idx].roughness;
             simd_float3 accum = simd_make_float3(0.0f, 0.0f, 0.0f);
             float weightSum = 0.0f;
 
@@ -130,17 +137,23 @@ std::vector<simd_float3> denoiseBeauty(const std::vector<simd_float3>& beauty,
                     const simd_float3 sampleColor = beauty[sampleIdx];
                     const simd_float3 sampleAlbedo = guides[sampleIdx].albedo;
                     const simd_float3 sampleNormal = guides[sampleIdx].normal;
+                    const float sampleDepth = guides[sampleIdx].depth;
+                    const float sampleRoughness = guides[sampleIdx].roughness;
 
                     const float spatial2 = static_cast<float>(ox * ox + oy * oy);
                     const float colorDist = simd_length(sampleColor - centerColor);
                     const float albedoDist = simd_length(sampleAlbedo - centerAlbedo);
                     const float normalDist = 1.0f - std::clamp(simd_dot(sampleNormal, centerNormal), 0.0f, 1.0f);
+                    const float depthDist = std::abs(sampleDepth - centerDepth);
+                    const float roughnessDist = std::abs(sampleRoughness - centerRoughness);
 
                     const float spatialWeight = std::exp(-spatial2 / (2.0f * spatialSigma * spatialSigma));
                     const float colorWeight = std::exp(-(colorDist * colorDist) / (2.0f * colorSigma * colorSigma));
                     const float albedoWeight = std::exp(-(albedoDist * albedoDist) / (2.0f * albedoSigma * albedoSigma));
                     const float normalWeight = std::exp(-(normalDist * normalDist) / (2.0f * normalSigma * normalSigma));
-                    const float weight = spatialWeight * colorWeight * albedoWeight * normalWeight;
+                    const float depthWeight = std::exp(-(depthDist * depthDist) / (2.0f * depthSigma * depthSigma));
+                    const float roughnessWeight = std::exp(-(roughnessDist * roughnessDist) / (2.0f * roughnessSigma * roughnessSigma));
+                    const float weight = spatialWeight * colorWeight * albedoWeight * normalWeight * depthWeight * roughnessWeight;
 
                     accum += sampleColor * weight;
                     weightSum += weight;
@@ -193,13 +206,15 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
         id<MTLBuffer> outBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
         id<MTLBuffer> normalBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
         id<MTLBuffer> albedoBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
-        if (outBuffer == nil || normalBuffer == nil || albedoBuffer == nil) {
+        id<MTLBuffer> depthRoughnessBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
+        if (outBuffer == nil || normalBuffer == nil || albedoBuffer == nil || depthRoughnessBuffer == nil) {
             if (error_message) *error_message = "Failed to allocate Metal output buffers.";
             return false;
         }
         std::memset([outBuffer contents], 0, pixelCount * sizeof(float) * 4);
         std::memset([normalBuffer contents], 0, pixelCount * sizeof(float) * 4);
         std::memset([albedoBuffer contents], 0, pixelCount * sizeof(float) * 4);
+        std::memset([depthRoughnessBuffer contents], 0, pixelCount * sizeof(float) * 4);
 
         id<MTLBuffer> cameraBuffer = [device newBufferWithBytes:&scene.camera length:sizeof(CameraData) options:MTLResourceStorageModeShared];
         id<MTLBuffer> sphereBuffer = makeSceneBuffer(device, scene.spheres);
@@ -255,6 +270,7 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
             [encoder setBuffer:triangleBuffer offset:0 atIndex:5];
             [encoder setBuffer:normalBuffer offset:0 atIndex:6];
             [encoder setBuffer:albedoBuffer offset:0 atIndex:7];
+            [encoder setBuffer:depthRoughnessBuffer offset:0 atIndex:8];
             [encoder dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
             [encoder endEncoding];
             [commandBuffer commit];
@@ -264,15 +280,26 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
         const auto* accum = static_cast<const float*>([outBuffer contents]);
         const auto* normalAccum = static_cast<const float*>([normalBuffer contents]);
         const auto* albedoAccum = static_cast<const float*>([albedoBuffer contents]);
+        const auto* depthRoughnessAccum = static_cast<const float*>([depthRoughnessBuffer contents]);
         std::vector<simd_float3> beauty(pixelCount);
         std::vector<GuidePixel> guides(pixelCount);
         const float invSamples = 1.0f / static_cast<float>(spp);
+        float minDepth = std::numeric_limits<float>::max();
+        float maxDepth = 0.0f;
         for (size_t i = 0; i < pixelCount; ++i) {
             beauty[i] = simd_make_float3(accum[i * 4 + 0], accum[i * 4 + 1], accum[i * 4 + 2]) * invSamples;
             simd_float3 normal = simd_make_float3(normalAccum[i * 4 + 0], normalAccum[i * 4 + 1], normalAccum[i * 4 + 2]) * invSamples;
             simd_float3 albedo = simd_make_float3(albedoAccum[i * 4 + 0], albedoAccum[i * 4 + 1], albedoAccum[i * 4 + 2]) * invSamples;
+            float depth = depthRoughnessAccum[i * 4 + 0] * invSamples;
+            float roughness = depthRoughnessAccum[i * 4 + 1] * invSamples;
             guides[i].normal = simd_normalize(simd_max(normal * 2.0f - 1.0f, simd_make_float3(-1.0f, -1.0f, -1.0f)));
             guides[i].albedo = albedo;
+            guides[i].depth = depth;
+            guides[i].roughness = roughness;
+            if (depth > 0.0f) {
+                minDepth = std::min(minDepth, depth);
+                maxDepth = std::max(maxDepth, depth);
+            }
         }
 
         std::vector<simd_float3> finalBeauty = options.denoise
@@ -282,9 +309,15 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
         if (options.save_guide_buffers) {
             std::vector<simd_float3> normalImage(pixelCount);
             std::vector<simd_float3> albedoImage(pixelCount);
+            std::vector<simd_float3> depthImage(pixelCount);
+            std::vector<simd_float3> roughnessImage(pixelCount);
+            const float depthRange = std::max(maxDepth - minDepth, 1e-4f);
             for (size_t i = 0; i < pixelCount; ++i) {
                 normalImage[i] = guides[i].normal * 0.5f + simd_make_float3(0.5f, 0.5f, 0.5f);
                 albedoImage[i] = guides[i].albedo;
+                float normalizedDepth = guides[i].depth > 0.0f ? (guides[i].depth - minDepth) / depthRange : 1.0f;
+                depthImage[i] = simd_make_float3(normalizedDepth, normalizedDepth, normalizedDepth);
+                roughnessImage[i] = simd_make_float3(guides[i].roughness, guides[i].roughness, guides[i].roughness);
             }
 
             if (!writePPM(sidecarPathFor(options.output, "_normal"), options.width, options.height, encodeRGB(normalImage, false))) {
@@ -293,6 +326,14 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
             }
             if (!writePPM(sidecarPathFor(options.output, "_albedo"), options.width, options.height, encodeRGB(albedoImage, false))) {
                 if (error_message) *error_message = "Failed to write albedo guide image.";
+                return false;
+            }
+            if (!writePPM(sidecarPathFor(options.output, "_depth"), options.width, options.height, encodeRGB(depthImage, false))) {
+                if (error_message) *error_message = "Failed to write depth guide image.";
+                return false;
+            }
+            if (!writePPM(sidecarPathFor(options.output, "_roughness"), options.width, options.height, encodeRGB(roughnessImage, false))) {
+                if (error_message) *error_message = "Failed to write roughness guide image.";
                 return false;
             }
         }

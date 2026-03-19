@@ -797,6 +797,7 @@ kernel void renderScene(device float4* outAccum [[buffer(0)]],
                         constant TriangleData* triangles [[buffer(5)]],
                         device float4* outNormalAccum [[buffer(6)]],
                         device float4* outAlbedoAccum [[buffer(7)]],
+                        device float4* outDepthRoughnessAccum [[buffer(8)]],
                         uint2 gid [[thread_position_in_grid]]) {
     if (gid.x >= uniforms.width || gid.y >= uniforms.height) return;
 
@@ -831,6 +832,9 @@ kernel void renderScene(device float4* outAccum [[buffer(0)]],
 
     float3 guideNormal = hit.hit ? hit.normal * 0.5f + 0.5f : normalize(rd) * 0.5f + 0.5f;
     float3 guideAlbedo = hit.hit ? hit.albedo : sky_color(rd);
+    float guideDepth = hit.hit ? hit.t : 0.0f;
+    float guideRoughness = hit.hit ? clamp(hit.roughness, 0.0f, 1.0f) : 1.0f;
     outNormalAccum[idx] += float4(guideNormal, 1.0f);
     outAlbedoAccum[idx] += float4(guideAlbedo, 1.0f);
+    outDepthRoughnessAccum[idx] += float4(guideDepth, guideRoughness, 0.0f, 1.0f);
 }
