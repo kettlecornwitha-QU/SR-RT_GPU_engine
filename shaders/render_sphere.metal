@@ -868,7 +868,6 @@ static inline ShadingResult shade_hit(thread const HitInfo& hit,
 
     float3 bounceColor = float3(0.0f);
     BounceSample bounce = sample_material_bounce(hit, rd, uniforms, rng);
-
     bounceColor = trace_secondary_radiance(bounce.origin, bounce.direction,
                                            spheres, sphereCount,
                                            planes, planeCount,
@@ -901,8 +900,12 @@ kernel void renderScene(device float4* outAccum [[buffer(0)]],
                         device float4* outDiffuseAccum [[buffer(9)]],
                         device float4* outSpecularAccum [[buffer(10)]],
                         device float4* outTransmissionAccum [[buffer(11)]],
+                        device float4* outMomentAccum [[buffer(12)]],
+                        device const uint* activeMask [[buffer(13)]],
                         uint2 gid [[thread_position_in_grid]]) {
     if (gid.x >= uniforms.width || gid.y >= uniforms.height) return;
+    uint idx = gid.y * uniforms.width + gid.x;
+    if (activeMask[idx] == 0u) return;
 
     uint rng = hash_u32(gid.x + gid.y * uniforms.width + uniforms.sampleIndex * 9781u + 0x68bc21ebu);
     float2 jitter = sample_low_discrepancy(uniforms.sampleIndex, hash_u32(gid.x * 92821u ^ gid.y * 68917u ^ 0x1234abceu)) - 0.5f;
@@ -948,11 +951,11 @@ kernel void renderScene(device float4* outAccum [[buffer(0)]],
     shading.diffuse = min(max(shading.diffuse, 0.0f), float3(8.0f));
     shading.specular = min(max(shading.specular, 0.0f), float3(8.0f));
     shading.transmission = min(max(shading.transmission, 0.0f), float3(8.0f));
-    uint idx = gid.y * uniforms.width + gid.x;
     outAccum[idx] += float4(color, 1.0f);
     outDiffuseAccum[idx] += float4(shading.diffuse, 1.0f);
     outSpecularAccum[idx] += float4(shading.specular, 1.0f);
     outTransmissionAccum[idx] += float4(shading.transmission, 1.0f);
+    outMomentAccum[idx] += float4(color * color, 1.0f);
 
     float3 guideNormal = hit.hit ? hit.normal * 0.5f + 0.5f : normalize(rd) * 0.5f + 0.5f;
     float3 guideAlbedo = hit.hit ? hit.albedo : sky_color(rd);

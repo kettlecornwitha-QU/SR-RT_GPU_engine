@@ -28,6 +28,10 @@ static bool parseArgs(int argc, char** argv, RenderOptions& cfg) {
             const char* value = requireValue("--spp");
             if (!value) return false;
             cfg.spp = static_cast<uint32_t>(std::stoul(value));
+        } else if (arg == "--adaptive-min-spp") {
+            const char* value = requireValue("--adaptive-min-spp");
+            if (!value) return false;
+            cfg.adaptive_min_spp = static_cast<uint32_t>(std::stoul(value));
         } else if (arg == "--output") {
             const char* value = requireValue("--output");
             if (!value) return false;
@@ -44,6 +48,12 @@ static bool parseArgs(int argc, char** argv, RenderOptions& cfg) {
             const char* value = requireValue("--denoise-strength");
             if (!value) return false;
             cfg.denoise_strength = std::stof(value);
+        } else if (arg == "--adaptive-threshold") {
+            const char* value = requireValue("--adaptive-threshold");
+            if (!value) return false;
+            cfg.adaptive_threshold = std::stof(value);
+        } else if (arg == "--adaptive-sampling") {
+            cfg.adaptive_sampling = true;
         } else if (arg == "--no-denoise") {
             cfg.denoise = false;
         } else if (arg == "--save-guide-buffers") {
@@ -53,7 +63,7 @@ static bool parseArgs(int argc, char** argv, RenderOptions& cfg) {
         } else if (arg == "--print-scene-registry") {
             cfg.print_scene_registry = true;
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: sr_rt_gpu [--scene name] [--width N] [--height N] [--spp N] [--output path] [--firefly-clamp V] [--denoise-strength V] [--no-denoise] [--save-guide-buffers] [--print-options-schema] [--print-scene-registry]\n";
+            std::cout << "Usage: sr_rt_gpu [--scene name] [--width N] [--height N] [--spp N] [--adaptive-sampling] [--adaptive-min-spp N] [--adaptive-threshold V] [--output path] [--firefly-clamp V] [--denoise-strength V] [--no-denoise] [--save-guide-buffers] [--print-options-schema] [--print-scene-registry]\n";
             return false;
         } else {
             std::cerr << "Unknown argument: " << arg << "\n";
@@ -99,5 +109,9 @@ int main(int argc, char** argv) {
         std::cout << " with denoising disabled";
     }
     std::cout << " and firefly_clamp=" << cfg.firefly_clamp << "\n";
+    if (cfg.adaptive_sampling) {
+        std::cout << "Adaptive sampling enabled with min_spp=" << cfg.adaptive_min_spp
+                  << " and threshold=" << cfg.adaptive_threshold << "\n";
+    }
     return 0;
 }

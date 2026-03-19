@@ -18,11 +18,14 @@ struct RenderOptions {
     uint32_t width = 960;
     uint32_t height = 540;
     uint32_t spp = 16;
+    uint32_t adaptive_min_spp = 8;
     std::string output = "outputs/metal_starter.ppm";
     std::string scene = "starter";
     float firefly_clamp = 6.0f;
     float denoise_strength = 1.0f;
+    float adaptive_threshold = 0.02f;
     bool denoise = true;
+    bool adaptive_sampling = false;
     bool save_guide_buffers = false;
     bool print_options_schema = false;
     bool print_scene_registry = false;

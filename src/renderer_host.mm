@@ -162,8 +162,11 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
         id<MTLBuffer> diffuseBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
         id<MTLBuffer> specularBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
         id<MTLBuffer> transmissionBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
+        id<MTLBuffer> momentBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
+        id<MTLBuffer> activeMaskBuffer = [device newBufferWithLength:pixelCount * sizeof(uint32_t) options:MTLResourceStorageModeShared];
         if (outBuffer == nil || normalBuffer == nil || albedoBuffer == nil || depthRoughnessBuffer == nil ||
-            diffuseBuffer == nil || specularBuffer == nil || transmissionBuffer == nil) {
+            diffuseBuffer == nil || specularBuffer == nil || transmissionBuffer == nil ||
+            momentBuffer == nil || activeMaskBuffer == nil) {
             if (error_message) *error_message = "Failed to allocate Metal output buffers.";
             return false;
         }
@@ -174,6 +177,11 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
         std::memset([diffuseBuffer contents], 0, pixelCount * sizeof(float) * 4);
         std::memset([specularBuffer contents], 0, pixelCount * sizeof(float) * 4);
         std::memset([transmissionBuffer contents], 0, pixelCount * sizeof(float) * 4);
+        std::memset([momentBuffer contents], 0, pixelCount * sizeof(float) * 4);
+        auto* activeMask = static_cast<uint32_t*>([activeMaskBuffer contents]);
+        for (size_t i = 0; i < pixelCount; ++i) {
+            activeMask[i] = 1u;
+        }
 
         id<MTLBuffer> cameraBuffer = [device newBufferWithBytes:&scene.camera length:sizeof(CameraData) options:MTLResourceStorageModeShared];
         id<MTLBuffer> sphereBuffer = makeSceneBuffer(device, scene.spheres);
@@ -197,6 +205,9 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
         MTLSize threadsPerGrid = MTLSizeMake(options.width, options.height, 1);
 
         const uint32_t spp = std::max<uint32_t>(1u, options.spp);
+        const uint32_t adaptiveMinSpp = std::min(std::max<uint32_t>(1u, options.adaptive_min_spp), spp);
+        const uint32_t adaptiveCheckInterval = 4u;
+        size_t activePixelCount = pixelCount;
         for (uint32_t sample = 0; sample < spp; ++sample) {
             RenderUniforms uniforms {
                 options.width,
@@ -233,10 +244,49 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
             [encoder setBuffer:diffuseBuffer offset:0 atIndex:9];
             [encoder setBuffer:specularBuffer offset:0 atIndex:10];
             [encoder setBuffer:transmissionBuffer offset:0 atIndex:11];
+            [encoder setBuffer:momentBuffer offset:0 atIndex:12];
+            [encoder setBuffer:activeMaskBuffer offset:0 atIndex:13];
             [encoder dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
             [encoder endEncoding];
             [commandBuffer commit];
             [commandBuffer waitUntilCompleted];
+
+            if (options.adaptive_sampling &&
+                sample + 1 >= adaptiveMinSpp &&
+                (((sample + 1) % adaptiveCheckInterval) == 0u || (sample + 1) == spp)) {
+                const auto* accumSnapshot = static_cast<const float*>([outBuffer contents]);
+                const auto* momentSnapshot = static_cast<const float*>([momentBuffer contents]);
+                activePixelCount = 0;
+                for (size_t i = 0; i < pixelCount; ++i) {
+                    if (activeMask[i] == 0u) {
+                        continue;
+                    }
+                    float sampleCount = accumSnapshot[i * 4 + 3];
+                    if (sampleCount < static_cast<float>(adaptiveMinSpp)) {
+                        ++activePixelCount;
+                        continue;
+                    }
+
+                    simd_float3 mean = simd_make_float3(accumSnapshot[i * 4 + 0],
+                                                        accumSnapshot[i * 4 + 1],
+                                                        accumSnapshot[i * 4 + 2]) / sampleCount;
+                    simd_float3 meanSq = simd_make_float3(momentSnapshot[i * 4 + 0],
+                                                          momentSnapshot[i * 4 + 1],
+                                                          momentSnapshot[i * 4 + 2]) / sampleCount;
+                    simd_float3 variance3 = simd_max(meanSq - mean * mean, simd_make_float3(0.0f, 0.0f, 0.0f));
+                    float variance = std::max(variance3.x, std::max(variance3.y, variance3.z));
+                    float meanLuma = std::max(0.05f, 0.2126f * mean.x + 0.7152f * mean.y + 0.0722f * mean.z);
+                    float relativeError = std::sqrt(variance) / meanLuma;
+                    if (relativeError < options.adaptive_threshold) {
+                        activeMask[i] = 0u;
+                    } else {
+                        ++activePixelCount;
+                    }
+                }
+                if (activePixelCount == 0) {
+                    break;
+                }
+            }
         }
 
         const auto* accum = static_cast<const float*>([outBuffer contents]);
@@ -250,6 +300,7 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
         std::vector<simd_float3> diffuseImage(pixelCount);
         std::vector<simd_float3> specularImage(pixelCount);
         std::vector<simd_float3> transmissionImage(pixelCount);
+        std::vector<float> sampleCountImage(pixelCount);
         std::vector<GuidePixel> guides(pixelCount);
         id<MTLBuffer> componentBufferA = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
         id<MTLBuffer> componentBufferB = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
@@ -260,21 +311,23 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
             if (error_message) *error_message = "Failed to allocate denoise buffers.";
             return false;
         }
-        const float invSamples = 1.0f / static_cast<float>(spp);
         float minDepth = std::numeric_limits<float>::max();
         float maxDepth = 0.0f;
         auto* guideNormal = static_cast<float*>([guideNormalBuffer contents]);
         auto* guideAlbedo = static_cast<float*>([guideAlbedoBuffer contents]);
         auto* guideDepthRoughness = static_cast<float*>([guideDepthRoughnessBuffer contents]);
         for (size_t i = 0; i < pixelCount; ++i) {
-            beauty[i] = simd_make_float3(accum[i * 4 + 0], accum[i * 4 + 1], accum[i * 4 + 2]) * invSamples;
-            diffuseImage[i] = simd_make_float3(diffuseAccum[i * 4 + 0], diffuseAccum[i * 4 + 1], diffuseAccum[i * 4 + 2]) * invSamples;
-            specularImage[i] = simd_make_float3(specularAccum[i * 4 + 0], specularAccum[i * 4 + 1], specularAccum[i * 4 + 2]) * invSamples;
-            transmissionImage[i] = simd_make_float3(transmissionAccum[i * 4 + 0], transmissionAccum[i * 4 + 1], transmissionAccum[i * 4 + 2]) * invSamples;
-            simd_float3 normal = simd_make_float3(normalAccum[i * 4 + 0], normalAccum[i * 4 + 1], normalAccum[i * 4 + 2]) * invSamples;
-            simd_float3 albedo = simd_make_float3(albedoAccum[i * 4 + 0], albedoAccum[i * 4 + 1], albedoAccum[i * 4 + 2]) * invSamples;
-            float depth = depthRoughnessAccum[i * 4 + 0] * invSamples;
-            float roughness = depthRoughnessAccum[i * 4 + 1] * invSamples;
+            float sampleCount = std::max(1.0f, accum[i * 4 + 3]);
+            float invCount = 1.0f / sampleCount;
+            sampleCountImage[i] = sampleCount;
+            beauty[i] = simd_make_float3(accum[i * 4 + 0], accum[i * 4 + 1], accum[i * 4 + 2]) * invCount;
+            diffuseImage[i] = simd_make_float3(diffuseAccum[i * 4 + 0], diffuseAccum[i * 4 + 1], diffuseAccum[i * 4 + 2]) * invCount;
+            specularImage[i] = simd_make_float3(specularAccum[i * 4 + 0], specularAccum[i * 4 + 1], specularAccum[i * 4 + 2]) * invCount;
+            transmissionImage[i] = simd_make_float3(transmissionAccum[i * 4 + 0], transmissionAccum[i * 4 + 1], transmissionAccum[i * 4 + 2]) * invCount;
+            simd_float3 normal = simd_make_float3(normalAccum[i * 4 + 0], normalAccum[i * 4 + 1], normalAccum[i * 4 + 2]) * invCount;
+            simd_float3 albedo = simd_make_float3(albedoAccum[i * 4 + 0], albedoAccum[i * 4 + 1], albedoAccum[i * 4 + 2]) * invCount;
+            float depth = depthRoughnessAccum[i * 4 + 0] * invCount;
+            float roughness = depthRoughnessAccum[i * 4 + 1] * invCount;
             guides[i].normal = simd_normalize(simd_max(normal * 2.0f - 1.0f, simd_make_float3(-1.0f, -1.0f, -1.0f)));
             guides[i].albedo = albedo;
             guides[i].depth = depth;
@@ -382,13 +435,23 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
             std::vector<simd_float3> albedoImage(pixelCount);
             std::vector<simd_float3> depthImage(pixelCount);
             std::vector<simd_float3> roughnessImage(pixelCount);
+            std::vector<simd_float3> samplesImage(pixelCount);
             const float depthRange = std::max(maxDepth - minDepth, 1e-4f);
+            float minSamples = std::numeric_limits<float>::max();
+            float maxSamples = 0.0f;
+            for (float count : sampleCountImage) {
+                minSamples = std::min(minSamples, count);
+                maxSamples = std::max(maxSamples, count);
+            }
+            float sampleRange = std::max(maxSamples - minSamples, 1e-4f);
             for (size_t i = 0; i < pixelCount; ++i) {
                 normalImage[i] = guides[i].normal * 0.5f + simd_make_float3(0.5f, 0.5f, 0.5f);
                 albedoImage[i] = guides[i].albedo;
                 float normalizedDepth = guides[i].depth > 0.0f ? (guides[i].depth - minDepth) / depthRange : 1.0f;
                 depthImage[i] = simd_make_float3(normalizedDepth, normalizedDepth, normalizedDepth);
                 roughnessImage[i] = simd_make_float3(guides[i].roughness, guides[i].roughness, guides[i].roughness);
+                float normalizedSamples = (sampleCountImage[i] - minSamples) / sampleRange;
+                samplesImage[i] = simd_make_float3(normalizedSamples, normalizedSamples, normalizedSamples);
             }
 
             if (!writePPM(sidecarPathFor(options.output, "_normal"), options.width, options.height, encodeRGB(normalImage, false))) {
@@ -405,6 +468,10 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
             }
             if (!writePPM(sidecarPathFor(options.output, "_roughness"), options.width, options.height, encodeRGB(roughnessImage, false))) {
                 if (error_message) *error_message = "Failed to write roughness guide image.";
+                return false;
+            }
+            if (!writePPM(sidecarPathFor(options.output, "_samples"), options.width, options.height, encodeRGB(samplesImage, false))) {
+                if (error_message) *error_message = "Failed to write sample-count image.";
                 return false;
             }
             if (!writePPM(sidecarPathFor(options.output, "_diffuse"), options.width, options.height, encodeRGB(diffuseImage, true))) {
