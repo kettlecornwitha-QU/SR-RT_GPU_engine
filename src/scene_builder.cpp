@@ -56,14 +56,14 @@ SceneDescription makeStarterScene() {
     SceneDescription scene;
     scene.name = "starter";
     scene.label = "Starter";
-    scene.description = "Starter composition with Lambertian, metal, coated, dielectric, and emissive materials, with the emissive triangle positioned to cast visible direct light.";
+    scene.description = "Starter composition with Lambertian, metal, copper, dielectric, coated, and emissive materials, with the emissive triangle positioned to cast visible direct light.";
     scene.camera = makeCamera(simd_make_float3(0.0f, 0.9f, 2.2f), simd_make_float3(0.0f, -0.15f, -3.8f), 1.5f, 1.0f);
     scene.planes.push_back(makeGroundPlane(-1.0f, simd_make_float3(0.85f, 0.86f, 0.88f), simd_make_float3(0.28f, 0.30f, 0.34f), 1.2f));
     scene.spheres = {
         makeSphere(simd_make_float3(-1.2f, -0.15f, -3.6f), 0.85f, simd_make_float3(0.82f, 0.33f, 0.20f), 0.18f, MATERIAL_LAMBERTIAN),
         makeSphere(simd_make_float3(0.15f, -0.30f, -2.75f), 0.70f, simd_make_float3(0.92f, 0.96f, 1.00f), 0.04f, MATERIAL_DIELECTRIC),
-        makeSphere(simd_make_float3(1.65f, -0.45f, -4.35f), 0.55f, simd_make_float3(0.22f, 0.52f, 0.88f), 0.22f, MATERIAL_COATED),
-        makeSphere(simd_make_float3(2.45f, -0.58f, -5.10f), 0.38f, simd_make_float3(0.78f, 0.82f, 0.88f), 0.10f, MATERIAL_METAL),
+        makeSphere(simd_make_float3(1.45f, -0.45f, -4.10f), 0.52f, simd_make_float3(0.22f, 0.52f, 0.88f), 0.22f, MATERIAL_COATED),
+        makeSphere(simd_make_float3(2.35f, -0.56f, -4.95f), 0.34f, simd_make_float3(0.95f, 0.64f, 0.34f), 0.08f, MATERIAL_COPPER),
     };
     scene.triangles = {
         makeTriangle(simd_make_float3(-2.4f, -0.15f, -5.8f), simd_make_float3(-1.7f, 1.0f, -5.4f), simd_make_float3(-0.9f, -0.2f, -5.6f), simd_make_float3(0.78f, 0.26f, 0.22f), 0.25f, MATERIAL_LAMBERTIAN),
@@ -76,12 +76,12 @@ SceneDescription makeWideScene() {
     SceneDescription scene;
     scene.name = "wide";
     scene.label = "Wide";
-    scene.description = "Wider framing with mixed Lambertian, metal, coated, dielectric, and emissive surfaces, stronger emissive lighting, hard shadows, and multisampled direct lighting.";
+    scene.description = "Wider framing with mixed Lambertian, metal, aluminum, coated, dielectric, and emissive surfaces, stronger emissive lighting, hard shadows, and multisampled direct lighting.";
     scene.camera = makeCamera(simd_make_float3(0.0f, 1.35f, 3.8f), simd_make_float3(0.0f, -0.35f, -4.4f), 1.7f, 1.0f);
     scene.planes.push_back(makeGroundPlane(-1.0f, simd_make_float3(0.90f, 0.90f, 0.92f), simd_make_float3(0.22f, 0.24f, 0.28f), 1.4f));
     scene.spheres = {
         makeSphere(simd_make_float3(-2.3f, -0.35f, -5.1f), 0.65f, simd_make_float3(0.85f, 0.42f, 0.22f), 0.22f, MATERIAL_LAMBERTIAN),
-        makeSphere(simd_make_float3(-0.7f, -0.10f, -4.0f), 0.90f, simd_make_float3(0.82f, 0.86f, 0.92f), 0.08f, MATERIAL_METAL),
+        makeSphere(simd_make_float3(-0.7f, -0.10f, -4.0f), 0.90f, simd_make_float3(0.82f, 0.86f, 0.92f), 0.08f, MATERIAL_ALUMINUM),
         makeSphere(simd_make_float3(0.95f, -0.42f, -3.25f), 0.58f, simd_make_float3(0.94f, 0.98f, 1.00f), 0.03f, MATERIAL_DIELECTRIC),
         makeSphere(simd_make_float3(2.35f, -0.55f, -5.6f), 0.45f, simd_make_float3(0.28f, 0.76f, 0.55f), 0.24f, MATERIAL_COATED),
     };
@@ -97,17 +97,18 @@ SceneDescription makeMaterialsScene() {
     SceneDescription scene;
     scene.name = "materials";
     scene.label = "Materials";
-    scene.description = "Sphere-only material showcase with Lambertian, metal, coated, dielectric, and emissive spheres on a large ground sphere.";
+    scene.description = "Sphere-only material showcase with Lambertian, metal, copper, aluminum, coated, dielectric, and emissive spheres on a large ground sphere.";
     scene.camera = makeCamera(simd_make_float3(0.0f, 1.0f, 4.8f), simd_make_float3(0.0f, -0.25f, -4.6f), 1.65f, 1.0f);
     scene.spheres = {
         makeSphere(simd_make_float3(0.0f, -1001.2f, -5.5f), 1000.0f, simd_make_float3(0.78f, 0.80f, 0.84f), 0.55f, MATERIAL_LAMBERTIAN),
-        makeSphere(simd_make_float3(-3.6f, -0.15f, -5.8f), 0.95f, simd_make_float3(0.82f, 0.32f, 0.20f), 0.20f, MATERIAL_LAMBERTIAN),
-        makeSphere(simd_make_float3(-1.7f, -0.18f, -5.2f), 0.92f, simd_make_float3(0.78f, 0.82f, 0.88f), 0.06f, MATERIAL_METAL),
-        makeSphere(simd_make_float3(0.1f, -0.20f, -4.9f), 0.90f, simd_make_float3(0.20f, 0.54f, 0.90f), 0.18f, MATERIAL_COATED),
-        makeSphere(simd_make_float3(1.9f, -0.18f, -5.1f), 0.92f, simd_make_float3(0.94f, 0.98f, 1.00f), 0.03f, MATERIAL_DIELECTRIC),
-        makeSphere(simd_make_float3(3.7f, -0.12f, -5.7f), 0.98f, simd_make_float3(1.00f, 0.86f, 0.56f), 0.0f, MATERIAL_EMISSIVE, 3.8f),
-        makeSphere(simd_make_float3(-0.85f, 1.85f, -6.8f), 0.65f, simd_make_float3(1.00f, 0.95f, 0.82f), 0.0f, MATERIAL_EMISSIVE, 4.8f),
-        makeSphere(simd_make_float3(2.2f, 1.45f, -6.4f), 0.50f, simd_make_float3(0.72f, 0.84f, 1.00f), 0.0f, MATERIAL_EMISSIVE, 3.4f),
+        makeSphere(simd_make_float3(-4.45f, -0.16f, -6.0f), 0.88f, simd_make_float3(0.82f, 0.32f, 0.20f), 0.20f, MATERIAL_LAMBERTIAN),
+        makeSphere(simd_make_float3(-2.70f, -0.18f, -5.55f), 0.86f, simd_make_float3(0.78f, 0.82f, 0.88f), 0.06f, MATERIAL_METAL),
+        makeSphere(simd_make_float3(-0.95f, -0.18f, -5.20f), 0.86f, simd_make_float3(0.95f, 0.64f, 0.34f), 0.08f, MATERIAL_COPPER),
+        makeSphere(simd_make_float3(0.85f, -0.18f, -5.15f), 0.86f, simd_make_float3(0.92f, 0.94f, 0.97f), 0.12f, MATERIAL_ALUMINUM),
+        makeSphere(simd_make_float3(2.65f, -0.20f, -5.05f), 0.88f, simd_make_float3(0.20f, 0.54f, 0.90f), 0.18f, MATERIAL_COATED),
+        makeSphere(simd_make_float3(4.45f, -0.18f, -5.55f), 0.90f, simd_make_float3(0.94f, 0.98f, 1.00f), 0.03f, MATERIAL_DIELECTRIC),
+        makeSphere(simd_make_float3(-1.35f, 1.85f, -6.9f), 0.62f, simd_make_float3(1.00f, 0.95f, 0.82f), 0.0f, MATERIAL_EMISSIVE, 4.8f),
+        makeSphere(simd_make_float3(2.25f, 1.48f, -6.4f), 0.50f, simd_make_float3(0.72f, 0.84f, 1.00f), 0.0f, MATERIAL_EMISSIVE, 3.4f),
     };
     return scene;
 }
@@ -144,6 +145,41 @@ SceneDescription makeRoughnessScene() {
     return scene;
 }
 
+SceneDescription makeMetalsScene() {
+    SceneDescription scene;
+    scene.name = "metals";
+    scene.label = "Metals";
+    scene.description = "Dedicated metal-material test scene with generic metal, copper, and aluminum spheres across roughness levels under darker surroundings for easier tuning.";
+    scene.camera = makeCamera(simd_make_float3(0.0f, 1.15f, 5.4f), simd_make_float3(0.0f, 0.25f, -5.8f), 2.0f, 0.95f);
+    scene.planes = {
+        makeGroundPlane(-1.85f, simd_make_float3(0.82f, 0.82f, 0.84f), simd_make_float3(0.18f, 0.19f, 0.22f), 1.6f, 0.28f),
+    };
+    scene.spheres = {
+        makeSphere(simd_make_float3(-3.5f, 1.65f, -6.0f), 0.92f, simd_make_float3(0.82f, 0.84f, 0.88f), 0.04f, MATERIAL_METAL),
+        makeSphere(simd_make_float3(0.0f, 1.65f, -5.8f), 0.92f, simd_make_float3(0.95f, 0.64f, 0.34f), 0.08f, MATERIAL_COPPER),
+        makeSphere(simd_make_float3(3.5f, 1.65f, -6.0f), 0.92f, simd_make_float3(0.92f, 0.94f, 0.97f), 0.12f, MATERIAL_ALUMINUM),
+
+        makeSphere(simd_make_float3(-3.5f, -0.10f, -5.6f), 0.92f, simd_make_float3(0.82f, 0.84f, 0.88f), 0.22f, MATERIAL_METAL),
+        makeSphere(simd_make_float3(0.0f, -0.10f, -5.4f), 0.92f, simd_make_float3(0.95f, 0.64f, 0.34f), 0.26f, MATERIAL_COPPER),
+        makeSphere(simd_make_float3(3.5f, -0.10f, -5.6f), 0.92f, simd_make_float3(0.92f, 0.94f, 0.97f), 0.30f, MATERIAL_ALUMINUM),
+
+        makeSphere(simd_make_float3(-3.5f, -1.85f, -5.2f), 0.92f, simd_make_float3(0.82f, 0.84f, 0.88f), 0.46f, MATERIAL_METAL),
+        makeSphere(simd_make_float3(0.0f, -1.85f, -5.0f), 0.92f, simd_make_float3(0.95f, 0.64f, 0.34f), 0.48f, MATERIAL_COPPER),
+        makeSphere(simd_make_float3(3.5f, -1.85f, -5.2f), 0.92f, simd_make_float3(0.92f, 0.94f, 0.97f), 0.52f, MATERIAL_ALUMINUM),
+
+        makeSphere(simd_make_float3(-1.95f, -0.55f, -9.2f), 0.58f, simd_make_float3(0.84f, 0.18f, 0.16f), 0.18f, MATERIAL_LAMBERTIAN),
+        makeSphere(simd_make_float3(1.95f, -0.40f, -8.8f), 0.64f, simd_make_float3(0.20f, 0.46f, 0.88f), 0.18f, MATERIAL_COATED),
+        makeSphere(simd_make_float3(0.0f, 2.95f, -7.0f), 0.80f, simd_make_float3(1.00f, 0.96f, 0.84f), 0.0f, MATERIAL_EMISSIVE, 4.9f),
+        makeSphere(simd_make_float3(-4.9f, 2.55f, -6.8f), 0.55f, simd_make_float3(1.00f, 0.78f, 0.64f), 0.0f, MATERIAL_EMISSIVE, 2.6f),
+        makeSphere(simd_make_float3(4.9f, 2.45f, -6.8f), 0.55f, simd_make_float3(0.74f, 0.86f, 1.00f), 0.0f, MATERIAL_EMISSIVE, 2.6f),
+    };
+    scene.triangles = {
+        makeTriangle(simd_make_float3(-6.8f, -2.2f, -11.2f), simd_make_float3(-6.8f, 5.2f, -11.2f), simd_make_float3(6.8f, 5.2f, -11.2f), simd_make_float3(0.12f, 0.13f, 0.16f), 0.82f, MATERIAL_LAMBERTIAN),
+        makeTriangle(simd_make_float3(-6.8f, -2.2f, -11.2f), simd_make_float3(6.8f, 5.2f, -11.2f), simd_make_float3(6.8f, -2.2f, -11.2f), simd_make_float3(0.12f, 0.13f, 0.16f), 0.82f, MATERIAL_LAMBERTIAN),
+    };
+    return scene;
+}
+
 std::string escapeJson(const std::string& text) {
     std::ostringstream out;
     for (char c : text) {
@@ -163,11 +199,12 @@ SceneDescription buildScene(const std::string& scene_name) {
     if (scene_name == "wide") return makeWideScene();
     if (scene_name == "materials") return makeMaterialsScene();
     if (scene_name == "roughness") return makeRoughnessScene();
+    if (scene_name == "metals") return makeMetalsScene();
     throw std::runtime_error("Unknown scene: " + scene_name);
 }
 
 std::vector<std::string> availableSceneNames() {
-    return {"starter", "wide", "materials", "roughness"};
+    return {"starter", "wide", "materials", "roughness", "metals"};
 }
 
 std::string buildOptionsSchemaJson() {
@@ -190,7 +227,7 @@ std::string buildOptionsSchemaJson() {
     out << "    \"output_gamma\": 2.2\n";
     out << "  },\n";
     out << "  \"choices\": {\n";
-    out << "    \"scene\": [\"starter\", \"wide\", \"materials\", \"roughness\"]\n";
+    out << "    \"scene\": [\"starter\", \"wide\", \"materials\", \"roughness\", \"metals\"]\n";
     out << "  },\n";
     out << "  \"defaults\": {\n";
     out << "    \"scene\": \"starter\",\n";
@@ -210,7 +247,7 @@ std::string buildOptionsSchemaJson() {
     out << "    \"environment_maps\": [\".hdr\", \".ppm\"],\n";
     out << "    \"tonemap_modes\": [\"filmic\", \"reinhard\", \"linear\"],\n";
     out << "    \"oidn_denoise\": \"optional_external\",\n";
-    out << "    \"material_types\": [\"lambertian\", \"metal\", \"emissive\", \"dielectric\", \"coated\"],\n";
+    out << "    \"material_types\": [\"lambertian\", \"metal\", \"emissive\", \"dielectric\", \"coated\", \"copper\", \"aluminum\"],\n";
     out << "    \"hard_shadows\": true,\n";
     out << "    \"multisampling\": true,\n";
     out << "    \"softer_directional_light\": true,\n";
@@ -223,7 +260,7 @@ std::string buildOptionsSchemaJson() {
 }
 
 std::string buildSceneRegistryJson() {
-    const auto scenes = std::vector<SceneDescription>{makeStarterScene(), makeWideScene(), makeMaterialsScene(), makeRoughnessScene()};
+    const auto scenes = std::vector<SceneDescription>{makeStarterScene(), makeWideScene(), makeMaterialsScene(), makeRoughnessScene(), makeMetalsScene()};
     std::ostringstream out;
     out << "{\n";
     out << "  \"schema_version\": 1,\n";

@@ -6,6 +6,8 @@ constant uint MATERIAL_METAL = 1;
 constant uint MATERIAL_EMISSIVE = 2;
 constant uint MATERIAL_DIELECTRIC = 3;
 constant uint MATERIAL_COATED = 4;
+constant uint MATERIAL_COPPER = 5;
+constant uint MATERIAL_ALUMINUM = 6;
 constant float PI_F = 3.14159265358979323846f;
 constant float INV_PHI = 0.6180339887498948482f;
 constant float ATROUS_KERNEL_5[5] = {1.0f / 16.0f, 0.25f, 0.375f, 0.25f, 1.0f / 16.0f};
@@ -111,7 +113,7 @@ struct LightingTerms {
 struct BounceSample {
     float3 origin;
     float3 direction;
-    float weight;
+    float3 weight;
 };
 
 struct ShadingComponents {
@@ -364,6 +366,13 @@ static inline float schlick_fresnel(float cosine, float f0) {
     return f0 + (1.0f - f0) * m5;
 }
 
+static inline float3 fresnel_schlick_color(float cosine, float3 f0) {
+    float m = clamp(1.0f - cosine, 0.0f, 1.0f);
+    float m2 = m * m;
+    float m5 = m2 * m2 * m;
+    return f0 + (1.0f - f0) * m5;
+}
+
 static inline bool refract_safe(float3 uv, float3 n, float eta, thread float3& refracted) {
     float cosTheta = min(dot(-uv, n), 1.0f);
     float3 rOutPerp = eta * (uv + cosTheta * n);
@@ -380,6 +389,83 @@ static inline float remap_micro_roughness(float roughness, float scale = 1.0f) {
     float alpha = clamp(roughness, 0.0f, 1.0f);
     alpha *= alpha;
     return clamp(alpha * scale, 0.0f, 1.0f);
+}
+
+static inline float smith_ggx_g1(float nDotX, float roughness) {
+    float r = roughness + 1.0f;
+    float k = (r * r) / 8.0f;
+    return nDotX / max(nDotX * (1.0f - k) + k, 1e-6f);
+}
+
+static inline float3 sample_ggx_half_vector(float3 normal, float roughness, thread uint& rng) {
+    float r1 = rand01(rng);
+    float r2 = rand01(rng);
+    float alpha = max(0.02f, clamp(roughness, 0.02f, 1.0f));
+    alpha *= alpha;
+    float phi = 2.0f * PI_F * r1;
+    float tan2Theta = (alpha * alpha * r2) / max(1e-6f, 1.0f - r2);
+    float cosTheta = rsqrt(1.0f + tan2Theta);
+    float sinTheta = sqrt(max(0.0f, 1.0f - cosTheta * cosTheta));
+    float3 tangent;
+    float3 bitangent;
+    build_basis(normal, tangent, bitangent);
+    float3 hLocal = float3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+    float3 h = normalize(tangent * hLocal.x + bitangent * hLocal.y + normal * hLocal.z);
+    return dot(h, normal) < 0.0f ? -h : h;
+}
+
+static inline bool is_conductor_material(uint materialType) {
+    return materialType == MATERIAL_COPPER || materialType == MATERIAL_ALUMINUM;
+}
+
+static inline void conductor_eta_k(uint materialType, thread float3& eta, thread float3& k) {
+    if (materialType == MATERIAL_COPPER) {
+        eta = float3(0.271f, 0.675f, 1.316f);
+        k = float3(3.609f, 2.624f, 2.292f);
+        return;
+    }
+
+    eta = float3(1.50f, 0.98f, 0.62f);
+    k = float3(7.30f, 6.60f, 5.40f);
+}
+
+static inline float3 adjust_conductor_appearance(uint materialType, float3 color) {
+    if (materialType == MATERIAL_COPPER) {
+        float3 tinted = color * float3(1.015f, 0.94f, 1.04f);
+        return clamp(tinted, float3(0.0f), float3(1.0f));
+    }
+    return color;
+}
+
+static inline float3 conductor_f0_from_eta_k(float3 eta, float3 k) {
+    float3 etaMinusOne = eta - 1.0f;
+    float3 etaPlusOne = eta + 1.0f;
+    float3 numerator = etaMinusOne * etaMinusOne + k * k;
+    float3 denominator = max(etaPlusOne * etaPlusOne + k * k, float3(1e-6f));
+    return numerator / denominator;
+}
+
+static inline float3 fresnel_conductor(float cosine, float3 eta, float3 k) {
+    float cosTheta = clamp(cosine, 0.0f, 1.0f);
+    float cos2 = cosTheta * cosTheta;
+    float3 eta2 = eta * eta;
+    float3 k2 = k * k;
+    float3 t0 = eta2 + k2;
+    float3 twoEtaCos = 2.0f * eta * cosTheta;
+
+    float3 rs = (t0 - twoEtaCos + cos2) / max(t0 + twoEtaCos + cos2, float3(1e-6f));
+    float3 rp = (t0 * cos2 - twoEtaCos + 1.0f) / max(t0 * cos2 + twoEtaCos + 1.0f, float3(1e-6f));
+    return 0.5f * (rs + rp);
+}
+
+static inline float3 material_reflectance_color(thread const HitInfo& hit) {
+    if (is_conductor_material(hit.materialType)) {
+        float3 eta;
+        float3 k;
+        conductor_eta_k(hit.materialType, eta, k);
+        return adjust_conductor_appearance(hit.materialType, conductor_f0_from_eta_k(eta, k));
+    }
+    return hit.albedo;
 }
 
 static inline LightingTerms compute_lighting_terms(thread const HitInfo& hit,
@@ -456,16 +542,26 @@ static inline float3 evaluate_metal_direct(thread const HitInfo& hit,
                                            constant RenderUniforms& uniforms,
                                            thread const LightingTerms& terms) {
     float3 viewDir = normalize(-rd);
+    float ndotv = max(dot(hit.normal, viewDir), 0.0f);
     float3 reflected = reflect(-terms.lightDir, hit.normal);
     float shininess = mix(90.0f, 10.0f, clamp(hit.roughness, 0.0f, 1.0f));
     float specular = pow(max(dot(viewDir, reflected), 0.0f), shininess);
-    float fresnel = pow(1.0f - max(dot(viewDir, hit.normal), 0.0f), 5.0f);
     float3 reflectedSky = sample_environment(reflect(rd, hit.normal), environmentMap, uniforms);
-    float3 metalBase = hit.albedo * (0.18f + 0.30f * terms.bouncedAmbient + 0.16f * terms.wrapDiffuse * terms.visibility);
-    float3 metalSpec = mix(hit.albedo, float3(1.0f), 0.45f) * (1.6f * specular * terms.visibility);
-    float3 environment = reflectedSky * (0.18f + 0.35f * fresnel) * (1.0f - hit.roughness * 0.55f);
-    float3 emissiveSpec = terms.emissiveDirect * (0.45f + 0.85f * (1.0f - hit.roughness));
-    return metalBase + metalSpec + environment + emissiveSpec;
+    float3 reflectanceColor = hit.albedo;
+    float3 edgeReflectance = float3(pow(1.0f - ndotv, 5.0f));
+    float3 metalSpecTint = mix(hit.albedo, float3(1.0f), 0.45f);
+    if (is_conductor_material(hit.materialType)) {
+        float3 eta;
+        float3 k;
+        conductor_eta_k(hit.materialType, eta, k);
+        reflectanceColor = adjust_conductor_appearance(hit.materialType, fresnel_conductor(ndotv, eta, k));
+        edgeReflectance = adjust_conductor_appearance(hit.materialType, fresnel_conductor(max(dot(viewDir, normalize(viewDir + terms.lightDir)), 0.0f), eta, k));
+        metalSpecTint = reflectanceColor;
+    }
+    float3 metalSpec = metalSpecTint * (0.92f * specular * terms.visibility);
+    float3 environment = reflectedSky * (0.01f + 0.10f * reflectanceColor + 0.08f * edgeReflectance) * (1.0f - hit.roughness * 0.28f);
+    float3 emissiveSpec = terms.emissiveDirect * reflectanceColor * (0.03f + 0.16f * (1.0f - hit.roughness));
+    return metalSpec + environment + emissiveSpec;
 }
 
 static inline BounceSample sample_lambertian_bounce(thread const HitInfo& hit,
@@ -474,7 +570,7 @@ static inline BounceSample sample_lambertian_bounce(thread const HitInfo& hit,
     BounceSample sample;
     sample.origin = hit.position + hit.normal * 1e-3f;
     sample.direction = cosine_sample_hemisphere(hit.normal, rng, uniforms.sampleIndex);
-    sample.weight = 0.55f;
+    sample.weight = float3(0.55f);
     return sample;
 }
 
@@ -491,7 +587,7 @@ static inline BounceSample sample_coated_bounce(thread const HitInfo& hit,
     if (dot(sample.direction, hit.normal) <= 0.0f) {
         sample.direction = perfectReflect;
     }
-    sample.weight = 0.30f + 0.20f * (1.0f - hit.roughness);
+    sample.weight = float3(0.30f + 0.20f * (1.0f - hit.roughness));
     return sample;
 }
 
@@ -524,7 +620,7 @@ static inline BounceSample sample_dielectric_bounce(thread const HitInfo& hit,
         sample.direction = normalize(mix(refracted, glossyRefract, glossyMix));
         sample.origin = hit.position - hit.normal * 1e-3f;
     }
-    sample.weight = 0.96f;
+    sample.weight = float3(0.96f);
     return sample;
 }
 
@@ -562,15 +658,44 @@ static inline BounceSample sample_metal_bounce(thread const HitInfo& hit,
                                                constant RenderUniforms& uniforms,
                                                thread uint& rng) {
     BounceSample sample;
-    sample.origin = hit.position + hit.normal * 1e-3f;
-    float3 perfectReflect = reflect(rd, hit.normal);
-    float3 glossyDir = cosine_sample_hemisphere(perfectReflect, rng, uniforms.sampleIndex + 17u);
-    float glossyMix = remap_micro_roughness(hit.roughness, 0.95f);
-    sample.direction = normalize(mix(perfectReflect, glossyDir, glossyMix));
-    if (dot(sample.direction, hit.normal) <= 0.0f) {
-        sample.direction = normalize(perfectReflect + hit.normal * 0.2f);
+    float3 wi = normalize(rd);
+    float3 viewDir = normalize(-wi);
+    float nDotV = max(dot(hit.normal, viewDir), 0.0f);
+    if (nDotV <= 0.0f) {
+        sample.origin = hit.position + hit.normal * 1e-3f;
+        sample.direction = reflect(rd, hit.normal);
+        sample.weight = float3(0.0f);
+        return sample;
     }
-    sample.weight = 0.45f + 0.35f * (1.0f - hit.roughness);
+
+    float3 halfVector = sample_ggx_half_vector(hit.normal, hit.roughness, rng);
+    float3 reflectedDir = normalize(reflect(wi, halfVector));
+    float nDotL = max(dot(hit.normal, reflectedDir), 0.0f);
+    float nDotH = max(dot(hit.normal, halfVector), 0.0f);
+    float vDotH = max(dot(viewDir, halfVector), 0.0f);
+    if (nDotL <= 0.0f || nDotH <= 0.0f || vDotH <= 0.0f) {
+        reflectedDir = reflect(rd, hit.normal);
+        halfVector = normalize(viewDir + reflectedDir);
+        nDotL = max(dot(hit.normal, reflectedDir), 0.0f);
+        nDotH = max(dot(hit.normal, halfVector), 0.0f);
+        vDotH = max(dot(viewDir, halfVector), 0.0f);
+    }
+
+    float g = smith_ggx_g1(nDotV, hit.roughness) * smith_ggx_g1(nDotL, hit.roughness);
+    float3 fresnel = material_reflectance_color(hit);
+    if (is_conductor_material(hit.materialType)) {
+        float3 eta;
+        float3 k;
+        conductor_eta_k(hit.materialType, eta, k);
+        fresnel = adjust_conductor_appearance(hit.materialType, fresnel_conductor(vDotH, eta, k));
+    } else {
+        fresnel = fresnel_schlick_color(vDotH, hit.albedo);
+    }
+
+    float throughput = (g * vDotH) / max(1e-6f, nDotV * nDotH);
+    sample.origin = hit.position + hit.normal * 1e-3f;
+    sample.direction = reflectedDir;
+    sample.weight = fresnel * throughput;
     return sample;
 }
 
@@ -666,7 +791,7 @@ static inline ShadingResult make_shading_result(thread const ShadingComponents& 
 
 static inline ShadingComponents compose_lambertian_shading(thread const HitInfo& hit,
                                                            float3 bounceColor,
-                                                           float bounceWeight,
+                                                           float3 bounceWeight,
                                                            thread const ShadingComponents& direct) {
     return make_shading_components(direct.diffuse + hit.albedo * bounceColor * bounceWeight,
                                    direct.specular,
@@ -676,7 +801,7 @@ static inline ShadingComponents compose_lambertian_shading(thread const HitInfo&
 static inline ShadingComponents compose_coated_shading(thread const HitInfo& hit,
                                                        float3 rd,
                                                        float3 bounceColor,
-                                                       float bounceWeight,
+                                                       float3 bounceWeight,
                                                        thread const ShadingComponents& direct) {
     float fresnel = schlick_fresnel(max(dot(hit.normal, normalize(-rd)), 0.0f), 0.04f);
     float3 diffuseBounce = hit.albedo * bounceColor * (0.18f + 0.12f * (1.0f - fresnel));
@@ -689,7 +814,7 @@ static inline ShadingComponents compose_coated_shading(thread const HitInfo& hit
 static inline ShadingComponents compose_dielectric_shading(thread const HitInfo& hit,
                                                            float3 rd,
                                                            float3 bounceColor,
-                                                           float bounceWeight,
+                                                           float3 bounceWeight,
                                                            thread const ShadingComponents& direct) {
     float fresnel = schlick_fresnel(max(dot(hit.normal, normalize(-rd)), 0.0f), 0.04f);
     float tintStrength = hit.frontFace ? 0.18f : 0.32f;
@@ -698,6 +823,15 @@ static inline ShadingComponents compose_dielectric_shading(thread const HitInfo&
     return make_shading_components(direct.diffuse,
                                    direct.specular,
                                    direct.transmission + bounceColor * transmissionTint * bounceWeight * transmissionWeight);
+}
+
+static inline ShadingComponents compose_metal_shading(thread const HitInfo& hit,
+                                                      float3 bounceColor,
+                                                      float3 bounceWeight,
+                                                      thread const ShadingComponents& direct) {
+    return make_shading_components(direct.diffuse,
+                                   direct.specular + bounceColor * bounceWeight,
+                                   direct.transmission);
 }
 
 static inline float triangle_area(constant TriangleData& tri) {
@@ -924,9 +1058,7 @@ static inline ShadingResult shade_hit(thread const HitInfo& hit,
     if (hit.materialType == MATERIAL_DIELECTRIC) {
         return make_shading_result(compose_dielectric_shading(hit, rd, bounceColor, bounce.weight, direct));
     }
-    return make_shading_result(make_shading_components(direct.diffuse,
-                                                       direct.specular + bounceColor * bounce.weight,
-                                                       direct.transmission));
+    return make_shading_result(compose_metal_shading(hit, bounceColor, bounce.weight, direct));
 }
 
 kernel void renderScene(device float4* outAccum [[buffer(0)]],
@@ -1001,7 +1133,7 @@ kernel void renderScene(device float4* outAccum [[buffer(0)]],
     outMomentAccum[idx] += float4(color * color, 1.0f);
 
     float3 guideNormal = hit.hit ? hit.normal * 0.5f + 0.5f : normalize(rd) * 0.5f + 0.5f;
-    float3 guideAlbedo = hit.hit ? hit.albedo : sample_environment(rd, environmentMap, uniforms);
+    float3 guideAlbedo = hit.hit ? material_reflectance_color(hit) : sample_environment(rd, environmentMap, uniforms);
     float guideDepth = hit.hit ? hit.t : 0.0f;
     float guideRoughness = hit.hit ? clamp(hit.roughness, 0.0f, 1.0f) : 1.0f;
     outNormalAccum[idx] += float4(guideNormal, 1.0f);
