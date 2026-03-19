@@ -111,6 +111,19 @@ struct BounceSample {
     float weight;
 };
 
+struct ShadingComponents {
+    float3 diffuse;
+    float3 specular;
+    float3 transmission;
+};
+
+struct ShadingResult {
+    float3 beauty;
+    float3 diffuse;
+    float3 specular;
+    float3 transmission;
+};
+
 static inline float3 direct_emissive_light(thread const HitInfo& hit,
                                            constant SphereData* spheres, uint sphereCount,
                                            constant PlaneData* planes, uint planeCount,
@@ -133,6 +146,14 @@ static inline float3 evaluate_direct_lighting(thread const HitInfo& hit,
                                               constant TriangleData* triangles, uint triangleCount,
                                               constant RenderUniforms& uniforms,
                                               thread uint& rng);
+
+static inline ShadingComponents evaluate_direct_components(thread const HitInfo& hit,
+                                                           float3 rd,
+                                                           constant SphereData* spheres, uint sphereCount,
+                                                           constant PlaneData* planes, uint planeCount,
+                                                           constant TriangleData* triangles, uint triangleCount,
+                                                           constant RenderUniforms& uniforms,
+                                                           thread uint& rng);
 
 static inline void init_hit(thread HitInfo& hit) {
     hit.t = 0.0f;
@@ -585,23 +606,63 @@ static inline float3 trace_secondary_radiance(float3 ro,
     return throughput * sky_color(rayDir);
 }
 
-static inline float3 compose_lambertian_shading(thread const HitInfo& hit, float3 bounceColor, float bounceWeight, float3 direct) {
-    return direct + hit.albedo * bounceColor * bounceWeight;
+static inline ShadingComponents make_shading_components(float3 diffuse = float3(0.0f),
+                                                        float3 specular = float3(0.0f),
+                                                        float3 transmission = float3(0.0f)) {
+    ShadingComponents components;
+    components.diffuse = diffuse;
+    components.specular = specular;
+    components.transmission = transmission;
+    return components;
 }
 
-static inline float3 compose_coated_shading(thread const HitInfo& hit, float3 rd, float3 bounceColor, float bounceWeight, float3 direct) {
+static inline float3 sum_components(thread const ShadingComponents& components) {
+    return components.diffuse + components.specular + components.transmission;
+}
+
+static inline ShadingResult make_shading_result(thread const ShadingComponents& components) {
+    ShadingResult result;
+    result.diffuse = components.diffuse;
+    result.specular = components.specular;
+    result.transmission = components.transmission;
+    result.beauty = sum_components(components);
+    return result;
+}
+
+static inline ShadingComponents compose_lambertian_shading(thread const HitInfo& hit,
+                                                           float3 bounceColor,
+                                                           float bounceWeight,
+                                                           thread const ShadingComponents& direct) {
+    return make_shading_components(direct.diffuse + hit.albedo * bounceColor * bounceWeight,
+                                   direct.specular,
+                                   direct.transmission);
+}
+
+static inline ShadingComponents compose_coated_shading(thread const HitInfo& hit,
+                                                       float3 rd,
+                                                       float3 bounceColor,
+                                                       float bounceWeight,
+                                                       thread const ShadingComponents& direct) {
     float fresnel = schlick_fresnel(max(dot(hit.normal, normalize(-rd)), 0.0f), 0.04f);
     float3 diffuseBounce = hit.albedo * bounceColor * (0.18f + 0.12f * (1.0f - fresnel));
     float3 specBounce = bounceColor * (0.22f + 0.28f * fresnel);
-    return direct + diffuseBounce + specBounce * bounceWeight;
+    return make_shading_components(direct.diffuse + diffuseBounce,
+                                   direct.specular + specBounce * bounceWeight,
+                                   direct.transmission);
 }
 
-static inline float3 compose_dielectric_shading(thread const HitInfo& hit, float3 rd, float3 bounceColor, float bounceWeight, float3 direct) {
+static inline ShadingComponents compose_dielectric_shading(thread const HitInfo& hit,
+                                                           float3 rd,
+                                                           float3 bounceColor,
+                                                           float bounceWeight,
+                                                           thread const ShadingComponents& direct) {
     float fresnel = schlick_fresnel(max(dot(hit.normal, normalize(-rd)), 0.0f), 0.04f);
     float tintStrength = hit.frontFace ? 0.18f : 0.32f;
     float3 transmissionTint = mix(float3(1.0f), hit.albedo, tintStrength);
     float transmissionWeight = mix(0.96f, 0.62f, fresnel);
-    return direct + bounceColor * transmissionTint * bounceWeight * transmissionWeight;
+    return make_shading_components(direct.diffuse,
+                                   direct.specular,
+                                   direct.transmission + bounceColor * transmissionTint * bounceWeight * transmissionWeight);
 }
 
 static inline float triangle_area(constant TriangleData& tri) {
@@ -739,8 +800,22 @@ static inline float3 evaluate_direct_lighting(thread const HitInfo& hit,
                                               constant TriangleData* triangles, uint triangleCount,
                                               constant RenderUniforms& uniforms,
                                               thread uint& rng) {
+    return sum_components(evaluate_direct_components(hit, rd,
+                                                     spheres, sphereCount,
+                                                     planes, planeCount,
+                                                     triangles, triangleCount,
+                                                     uniforms, rng));
+}
+
+static inline ShadingComponents evaluate_direct_components(thread const HitInfo& hit,
+                                                           float3 rd,
+                                                           constant SphereData* spheres, uint sphereCount,
+                                                           constant PlaneData* planes, uint planeCount,
+                                                           constant TriangleData* triangles, uint triangleCount,
+                                                           constant RenderUniforms& uniforms,
+                                                           thread uint& rng) {
     if (hit.materialType == MATERIAL_EMISSIVE) {
-        return hit.albedo * hit.emissionStrength;
+        return make_shading_components(hit.albedo * hit.emissionStrength, float3(0.0f), float3(0.0f));
     }
 
     LightingTerms terms = compute_lighting_terms(hit,
@@ -750,34 +825,45 @@ static inline float3 evaluate_direct_lighting(thread const HitInfo& hit,
                                                  uniforms, rng);
 
     if (hit.materialType == MATERIAL_LAMBERTIAN) {
-        return evaluate_lambertian_direct(hit, terms);
+        return make_shading_components(evaluate_lambertian_direct(hit, terms), float3(0.0f), float3(0.0f));
     }
 
     if (hit.materialType == MATERIAL_COATED) {
-        return evaluate_coated_direct(hit, rd, terms);
+        float3 viewDir = normalize(-rd);
+        float ndotv = max(dot(hit.normal, viewDir), 0.0f);
+        float3 reflected = reflect(-terms.lightDir, hit.normal);
+        float shininess = mix(150.0f, 22.0f, clamp(hit.roughness, 0.0f, 1.0f));
+        float specular = pow(max(dot(viewDir, reflected), 0.0f), shininess);
+        float fresnel = schlick_fresnel(ndotv, 0.04f);
+        float3 reflectedSky = sky_color(reflect(rd, hit.normal));
+        float3 diffuseBase = hit.albedo * (0.66f * terms.directSun + 0.24f * terms.wrapDiffuse + 1.10f * terms.bouncedAmbient);
+        diffuseBase += hit.albedo * (1.10f * terms.emissiveDirect);
+        float3 clearcoat = float3(1.0f) * (1.45f * specular * terms.visibility + 0.35f * fresnel);
+        float3 environment = reflectedSky * (0.10f + 0.32f * fresnel) * (1.0f - hit.roughness * 0.45f);
+        return make_shading_components(diffuseBase, clearcoat + environment, float3(0.0f));
     }
 
     if (hit.materialType == MATERIAL_DIELECTRIC) {
-        return evaluate_dielectric_direct(hit, rd, terms);
+        return make_shading_components(float3(0.0f), evaluate_dielectric_direct(hit, rd, terms), float3(0.0f));
     }
 
-    return evaluate_metal_direct(hit, rd, terms);
+    return make_shading_components(float3(0.0f), evaluate_metal_direct(hit, rd, terms), float3(0.0f));
 }
 
-static inline float3 shade_hit(thread const HitInfo& hit,
-                               float3 rd,
-                               constant SphereData* spheres, uint sphereCount,
-                               constant PlaneData* planes, uint planeCount,
-                               constant TriangleData* triangles, uint triangleCount,
-                               constant RenderUniforms& uniforms,
-                               thread uint& rng) {
-    float3 direct = evaluate_direct_lighting(hit, rd,
-                                             spheres, sphereCount,
-                                             planes, planeCount,
-                                             triangles, triangleCount,
-                                             uniforms, rng);
+static inline ShadingResult shade_hit(thread const HitInfo& hit,
+                                      float3 rd,
+                                      constant SphereData* spheres, uint sphereCount,
+                                      constant PlaneData* planes, uint planeCount,
+                                      constant TriangleData* triangles, uint triangleCount,
+                                      constant RenderUniforms& uniforms,
+                                      thread uint& rng) {
+    ShadingComponents direct = evaluate_direct_components(hit, rd,
+                                                          spheres, sphereCount,
+                                                          planes, planeCount,
+                                                          triangles, triangleCount,
+                                                          uniforms, rng);
     if (hit.materialType == MATERIAL_EMISSIVE) {
-        return direct;
+        return make_shading_result(direct);
     }
 
     float3 bounceColor = float3(0.0f);
@@ -790,15 +876,17 @@ static inline float3 shade_hit(thread const HitInfo& hit,
                                            uniforms, rng);
 
     if (hit.materialType == MATERIAL_LAMBERTIAN) {
-        return compose_lambertian_shading(hit, bounceColor, bounce.weight, direct);
+        return make_shading_result(compose_lambertian_shading(hit, bounceColor, bounce.weight, direct));
     }
     if (hit.materialType == MATERIAL_COATED) {
-        return compose_coated_shading(hit, rd, bounceColor, bounce.weight, direct);
+        return make_shading_result(compose_coated_shading(hit, rd, bounceColor, bounce.weight, direct));
     }
     if (hit.materialType == MATERIAL_DIELECTRIC) {
-        return compose_dielectric_shading(hit, rd, bounceColor, bounce.weight, direct);
+        return make_shading_result(compose_dielectric_shading(hit, rd, bounceColor, bounce.weight, direct));
     }
-    return direct + bounceColor * bounce.weight;
+    return make_shading_result(make_shading_components(direct.diffuse,
+                                                       direct.specular + bounceColor * bounce.weight,
+                                                       direct.transmission));
 }
 
 kernel void renderScene(device float4* outAccum [[buffer(0)]],
@@ -810,6 +898,9 @@ kernel void renderScene(device float4* outAccum [[buffer(0)]],
                         device float4* outNormalAccum [[buffer(6)]],
                         device float4* outAlbedoAccum [[buffer(7)]],
                         device float4* outDepthRoughnessAccum [[buffer(8)]],
+                        device float4* outDiffuseAccum [[buffer(9)]],
+                        device float4* outSpecularAccum [[buffer(10)]],
+                        device float4* outTransmissionAccum [[buffer(11)]],
                         uint2 gid [[thread_position_in_grid]]) {
     if (gid.x >= uniforms.width || gid.y >= uniforms.height) return;
 
@@ -825,22 +916,43 @@ kernel void renderScene(device float4* outAccum [[buffer(0)]],
     float3 rd = normalize(camera.forward * camera.focalLength + camera.right * screen.x + camera.up * (screen.y * camera.viewportScale));
 
     HitInfo hit;
-    float3 color = trace_scene(ro, rd,
-                               spheres, uniforms.sphereCount,
-                               planes, uniforms.planeCount,
-                               triangles, uniforms.triangleCount,
-                               hit)
-        ? shade_hit(hit, rd, spheres, uniforms.sphereCount, planes, uniforms.planeCount, triangles, uniforms.triangleCount, uniforms, rng)
-        : sky_color(rd);
+    ShadingResult shading;
+    if (trace_scene(ro, rd,
+                    spheres, uniforms.sphereCount,
+                    planes, uniforms.planeCount,
+                    triangles, uniforms.triangleCount,
+                    hit)) {
+        shading = shade_hit(hit, rd,
+                            spheres, uniforms.sphereCount,
+                            planes, uniforms.planeCount,
+                            triangles, uniforms.triangleCount,
+                            uniforms, rng);
+    } else {
+        shading.diffuse = sky_color(rd);
+        shading.specular = float3(0.0f);
+        shading.transmission = float3(0.0f);
+        shading.beauty = shading.diffuse;
+    }
+    float3 color = shading.beauty;
 
     color = max(color, 0.0f);
     float luminance = dot(color, float3(0.2126f, 0.7152f, 0.0722f));
     if (uniforms.fireflyClamp > 0.0f && luminance > uniforms.fireflyClamp) {
-        color *= uniforms.fireflyClamp / luminance;
+        float scale = uniforms.fireflyClamp / luminance;
+        color *= scale;
+        shading.diffuse *= scale;
+        shading.specular *= scale;
+        shading.transmission *= scale;
     }
     color = min(color, float3(8.0f));
+    shading.diffuse = min(max(shading.diffuse, 0.0f), float3(8.0f));
+    shading.specular = min(max(shading.specular, 0.0f), float3(8.0f));
+    shading.transmission = min(max(shading.transmission, 0.0f), float3(8.0f));
     uint idx = gid.y * uniforms.width + gid.x;
     outAccum[idx] += float4(color, 1.0f);
+    outDiffuseAccum[idx] += float4(shading.diffuse, 1.0f);
+    outSpecularAccum[idx] += float4(shading.specular, 1.0f);
+    outTransmissionAccum[idx] += float4(shading.transmission, 1.0f);
 
     float3 guideNormal = hit.hit ? hit.normal * 0.5f + 0.5f : normalize(rd) * 0.5f + 0.5f;
     float3 guideAlbedo = hit.hit ? hit.albedo : sky_color(rd);

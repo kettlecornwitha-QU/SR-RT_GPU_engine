@@ -159,7 +159,11 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
         id<MTLBuffer> normalBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
         id<MTLBuffer> albedoBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
         id<MTLBuffer> depthRoughnessBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
-        if (outBuffer == nil || normalBuffer == nil || albedoBuffer == nil || depthRoughnessBuffer == nil) {
+        id<MTLBuffer> diffuseBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
+        id<MTLBuffer> specularBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
+        id<MTLBuffer> transmissionBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
+        if (outBuffer == nil || normalBuffer == nil || albedoBuffer == nil || depthRoughnessBuffer == nil ||
+            diffuseBuffer == nil || specularBuffer == nil || transmissionBuffer == nil) {
             if (error_message) *error_message = "Failed to allocate Metal output buffers.";
             return false;
         }
@@ -167,6 +171,9 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
         std::memset([normalBuffer contents], 0, pixelCount * sizeof(float) * 4);
         std::memset([albedoBuffer contents], 0, pixelCount * sizeof(float) * 4);
         std::memset([depthRoughnessBuffer contents], 0, pixelCount * sizeof(float) * 4);
+        std::memset([diffuseBuffer contents], 0, pixelCount * sizeof(float) * 4);
+        std::memset([specularBuffer contents], 0, pixelCount * sizeof(float) * 4);
+        std::memset([transmissionBuffer contents], 0, pixelCount * sizeof(float) * 4);
 
         id<MTLBuffer> cameraBuffer = [device newBufferWithBytes:&scene.camera length:sizeof(CameraData) options:MTLResourceStorageModeShared];
         id<MTLBuffer> sphereBuffer = makeSceneBuffer(device, scene.spheres);
@@ -223,6 +230,9 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
             [encoder setBuffer:normalBuffer offset:0 atIndex:6];
             [encoder setBuffer:albedoBuffer offset:0 atIndex:7];
             [encoder setBuffer:depthRoughnessBuffer offset:0 atIndex:8];
+            [encoder setBuffer:diffuseBuffer offset:0 atIndex:9];
+            [encoder setBuffer:specularBuffer offset:0 atIndex:10];
+            [encoder setBuffer:transmissionBuffer offset:0 atIndex:11];
             [encoder dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
             [encoder endEncoding];
             [commandBuffer commit];
@@ -233,26 +243,34 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
         const auto* normalAccum = static_cast<const float*>([normalBuffer contents]);
         const auto* albedoAccum = static_cast<const float*>([albedoBuffer contents]);
         const auto* depthRoughnessAccum = static_cast<const float*>([depthRoughnessBuffer contents]);
+        const auto* diffuseAccum = static_cast<const float*>([diffuseBuffer contents]);
+        const auto* specularAccum = static_cast<const float*>([specularBuffer contents]);
+        const auto* transmissionAccum = static_cast<const float*>([transmissionBuffer contents]);
         std::vector<simd_float3> beauty(pixelCount);
+        std::vector<simd_float3> diffuseImage(pixelCount);
+        std::vector<simd_float3> specularImage(pixelCount);
+        std::vector<simd_float3> transmissionImage(pixelCount);
         std::vector<GuidePixel> guides(pixelCount);
-        id<MTLBuffer> beautyBufferA = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
-        id<MTLBuffer> beautyBufferB = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
+        id<MTLBuffer> componentBufferA = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
+        id<MTLBuffer> componentBufferB = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
         id<MTLBuffer> guideNormalBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
         id<MTLBuffer> guideAlbedoBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
         id<MTLBuffer> guideDepthRoughnessBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
-        if (beautyBufferA == nil || beautyBufferB == nil || guideNormalBuffer == nil || guideAlbedoBuffer == nil || guideDepthRoughnessBuffer == nil) {
+        if (componentBufferA == nil || componentBufferB == nil || guideNormalBuffer == nil || guideAlbedoBuffer == nil || guideDepthRoughnessBuffer == nil) {
             if (error_message) *error_message = "Failed to allocate denoise buffers.";
             return false;
         }
         const float invSamples = 1.0f / static_cast<float>(spp);
         float minDepth = std::numeric_limits<float>::max();
         float maxDepth = 0.0f;
-        auto* beautyA = static_cast<float*>([beautyBufferA contents]);
         auto* guideNormal = static_cast<float*>([guideNormalBuffer contents]);
         auto* guideAlbedo = static_cast<float*>([guideAlbedoBuffer contents]);
         auto* guideDepthRoughness = static_cast<float*>([guideDepthRoughnessBuffer contents]);
         for (size_t i = 0; i < pixelCount; ++i) {
             beauty[i] = simd_make_float3(accum[i * 4 + 0], accum[i * 4 + 1], accum[i * 4 + 2]) * invSamples;
+            diffuseImage[i] = simd_make_float3(diffuseAccum[i * 4 + 0], diffuseAccum[i * 4 + 1], diffuseAccum[i * 4 + 2]) * invSamples;
+            specularImage[i] = simd_make_float3(specularAccum[i * 4 + 0], specularAccum[i * 4 + 1], specularAccum[i * 4 + 2]) * invSamples;
+            transmissionImage[i] = simd_make_float3(transmissionAccum[i * 4 + 0], transmissionAccum[i * 4 + 1], transmissionAccum[i * 4 + 2]) * invSamples;
             simd_float3 normal = simd_make_float3(normalAccum[i * 4 + 0], normalAccum[i * 4 + 1], normalAccum[i * 4 + 2]) * invSamples;
             simd_float3 albedo = simd_make_float3(albedoAccum[i * 4 + 0], albedoAccum[i * 4 + 1], albedoAccum[i * 4 + 2]) * invSamples;
             float depth = depthRoughnessAccum[i * 4 + 0] * invSamples;
@@ -261,10 +279,6 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
             guides[i].albedo = albedo;
             guides[i].depth = depth;
             guides[i].roughness = roughness;
-            beautyA[i * 4 + 0] = beauty[i].x;
-            beautyA[i * 4 + 1] = beauty[i].y;
-            beautyA[i * 4 + 2] = beauty[i].z;
-            beautyA[i * 4 + 3] = 1.0f;
             guideNormal[i * 4 + 0] = normal.x;
             guideNormal[i * 4 + 1] = normal.y;
             guideNormal[i * 4 + 2] = normal.z;
@@ -285,51 +299,81 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
 
         std::vector<simd_float3> finalBeauty = beauty;
         if (options.denoise && options.denoise_strength > 0.0f) {
-            const float colorSigma = std::max(0.08f, 0.45f * options.denoise_strength);
-            const float albedoSigma = std::max(0.06f, 0.30f * options.denoise_strength);
-            const float normalSigma = std::max(0.04f, 0.18f * options.denoise_strength);
-            const float depthSigma = std::max(0.03f, 0.14f * options.denoise_strength);
-            const float roughnessSigma = std::max(0.02f, 0.12f * options.denoise_strength);
-            const int passCount = 4;
-            id<MTLBuffer> currentSrc = beautyBufferA;
-            id<MTLBuffer> currentDst = beautyBufferB;
+            const float baseColorSigma = std::max(0.08f, 0.45f * options.denoise_strength);
+            const float baseAlbedoSigma = std::max(0.06f, 0.30f * options.denoise_strength);
+            const float baseNormalSigma = std::max(0.04f, 0.18f * options.denoise_strength);
+            const float baseDepthSigma = std::max(0.03f, 0.14f * options.denoise_strength);
+            const float baseRoughnessSigma = std::max(0.02f, 0.12f * options.denoise_strength);
 
-            for (int pass = 0; pass < passCount; ++pass) {
-                DenoiseUniforms denoiseUniforms {
-                    options.width,
-                    options.height,
-                    static_cast<uint32_t>(1u << pass),
-                    colorSigma,
-                    albedoSigma,
-                    normalSigma,
-                    depthSigma,
-                    roughnessSigma,
-                };
-                id<MTLBuffer> denoiseUniformBuffer = [device newBufferWithBytes:&denoiseUniforms length:sizeof(DenoiseUniforms) options:MTLResourceStorageModeShared];
-                if (denoiseUniformBuffer == nil) {
-                    if (error_message) *error_message = "Failed to allocate denoise uniform buffer.";
-                    return false;
+            auto denoiseComponent = [&](std::vector<simd_float3>& image,
+                                        float colorScale,
+                                        float albedoScale,
+                                        float normalScale,
+                                        float depthScale,
+                                        float roughnessScale,
+                                        int passCount) -> bool {
+                auto* componentA = static_cast<float*>([componentBufferA contents]);
+                for (size_t i = 0; i < pixelCount; ++i) {
+                    componentA[i * 4 + 0] = image[i].x;
+                    componentA[i * 4 + 1] = image[i].y;
+                    componentA[i * 4 + 2] = image[i].z;
+                    componentA[i * 4 + 3] = 1.0f;
                 }
 
-                id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
-                id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
-                [encoder setComputePipelineState:denoisePipeline];
-                [encoder setBuffer:currentSrc offset:0 atIndex:0];
-                [encoder setBuffer:currentDst offset:0 atIndex:1];
-                [encoder setBuffer:guideNormalBuffer offset:0 atIndex:2];
-                [encoder setBuffer:guideAlbedoBuffer offset:0 atIndex:3];
-                [encoder setBuffer:guideDepthRoughnessBuffer offset:0 atIndex:4];
-                [encoder setBuffer:denoiseUniformBuffer offset:0 atIndex:5];
-                [encoder dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
-                [encoder endEncoding];
-                [commandBuffer commit];
-                [commandBuffer waitUntilCompleted];
-                std::swap(currentSrc, currentDst);
+                id<MTLBuffer> currentSrc = componentBufferA;
+                id<MTLBuffer> currentDst = componentBufferB;
+                for (int pass = 0; pass < passCount; ++pass) {
+                    DenoiseUniforms denoiseUniforms {
+                        options.width,
+                        options.height,
+                        static_cast<uint32_t>(1u << pass),
+                        baseColorSigma * colorScale,
+                        baseAlbedoSigma * albedoScale,
+                        baseNormalSigma * normalScale,
+                        baseDepthSigma * depthScale,
+                        baseRoughnessSigma * roughnessScale,
+                    };
+                    id<MTLBuffer> denoiseUniformBuffer = [device newBufferWithBytes:&denoiseUniforms length:sizeof(DenoiseUniforms) options:MTLResourceStorageModeShared];
+                    if (denoiseUniformBuffer == nil) {
+                        if (error_message) *error_message = "Failed to allocate denoise uniform buffer.";
+                        return false;
+                    }
+
+                    id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
+                    id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+                    [encoder setComputePipelineState:denoisePipeline];
+                    [encoder setBuffer:currentSrc offset:0 atIndex:0];
+                    [encoder setBuffer:currentDst offset:0 atIndex:1];
+                    [encoder setBuffer:guideNormalBuffer offset:0 atIndex:2];
+                    [encoder setBuffer:guideAlbedoBuffer offset:0 atIndex:3];
+                    [encoder setBuffer:guideDepthRoughnessBuffer offset:0 atIndex:4];
+                    [encoder setBuffer:denoiseUniformBuffer offset:0 atIndex:5];
+                    [encoder dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
+                    [encoder endEncoding];
+                    [commandBuffer commit];
+                    [commandBuffer waitUntilCompleted];
+                    std::swap(currentSrc, currentDst);
+                }
+
+                const auto* denoised = static_cast<const float*>([currentSrc contents]);
+                for (size_t i = 0; i < pixelCount; ++i) {
+                    image[i] = simd_make_float3(denoised[i * 4 + 0], denoised[i * 4 + 1], denoised[i * 4 + 2]);
+                }
+                return true;
+            };
+
+            if (!denoiseComponent(diffuseImage, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 4)) {
+                return false;
+            }
+            if (!denoiseComponent(specularImage, 0.42f, 0.45f, 0.70f, 0.78f, 0.82f, 2)) {
+                return false;
+            }
+            if (!denoiseComponent(transmissionImage, 0.52f, 0.48f, 0.72f, 0.82f, 0.86f, 2)) {
+                return false;
             }
 
-            const auto* denoised = static_cast<const float*>([currentSrc contents]);
             for (size_t i = 0; i < pixelCount; ++i) {
-                finalBeauty[i] = simd_make_float3(denoised[i * 4 + 0], denoised[i * 4 + 1], denoised[i * 4 + 2]);
+                finalBeauty[i] = diffuseImage[i] + specularImage[i] + transmissionImage[i];
             }
         }
 
@@ -361,6 +405,18 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
             }
             if (!writePPM(sidecarPathFor(options.output, "_roughness"), options.width, options.height, encodeRGB(roughnessImage, false))) {
                 if (error_message) *error_message = "Failed to write roughness guide image.";
+                return false;
+            }
+            if (!writePPM(sidecarPathFor(options.output, "_diffuse"), options.width, options.height, encodeRGB(diffuseImage, true))) {
+                if (error_message) *error_message = "Failed to write diffuse component image.";
+                return false;
+            }
+            if (!writePPM(sidecarPathFor(options.output, "_specular"), options.width, options.height, encodeRGB(specularImage, true))) {
+                if (error_message) *error_message = "Failed to write specular component image.";
+                return false;
+            }
+            if (!writePPM(sidecarPathFor(options.output, "_transmission"), options.width, options.height, encodeRGB(transmissionImage, true))) {
+                if (error_message) *error_message = "Failed to write transmission component image.";
                 return false;
             }
         }
