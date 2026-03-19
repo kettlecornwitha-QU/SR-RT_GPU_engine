@@ -108,6 +108,20 @@ static inline float3 direct_emissive_light(thread const HitInfo& hit,
 
 static inline float3 cosine_sample_hemisphere(float3 normal, thread uint& rng, uint sampleIndex);
 
+static inline bool trace_scene(float3 ro, float3 rd,
+                               constant SphereData* spheres, uint sphereCount,
+                               constant PlaneData* planes, uint planeCount,
+                               constant TriangleData* triangles, uint triangleCount,
+                               thread HitInfo& hit);
+
+static inline float3 evaluate_direct_lighting(thread const HitInfo& hit,
+                                              float3 rd,
+                                              constant SphereData* spheres, uint sphereCount,
+                                              constant PlaneData* planes, uint planeCount,
+                                              constant TriangleData* triangles, uint triangleCount,
+                                              constant RenderUniforms& uniforms,
+                                              thread uint& rng);
+
 static inline void init_hit(thread HitInfo& hit) {
     hit.t = 0.0f;
     hit.position = float3(0.0f);
@@ -360,12 +374,12 @@ static inline float3 evaluate_dielectric_direct(thread const HitInfo& hit, float
     float3 viewDir = normalize(-rd);
     float ndotv = max(dot(hit.normal, viewDir), 0.0f);
     float fresnel = schlick_fresnel(ndotv, 0.04f);
-    float diffuseWrap = 0.08f + 0.14f * terms.wrapDiffuse + 0.18f * terms.visibility;
     float3 reflectedSky = sky_color(reflect(rd, hit.normal));
-    float3 tintedInterior = hit.albedo * (0.18f * terms.bouncedAmbient + 0.12f * terms.emissiveDirect + diffuseWrap);
-    float3 reflection = reflectedSky * (0.35f + 0.65f * fresnel) * (1.0f - hit.roughness * 0.35f);
-    float3 sunSpark = float3(1.0f) * pow(max(dot(viewDir, reflect(-terms.lightDir, hit.normal)), 0.0f), mix(180.0f, 28.0f, hit.roughness));
-    return tintedInterior + reflection + sunSpark * (0.45f + 0.55f * terms.visibility);
+    float3 reflection = reflectedSky * (0.06f + 0.94f * fresnel) * (1.0f - hit.roughness * 0.18f);
+    float specular = pow(max(dot(viewDir, reflect(-terms.lightDir, hit.normal)), 0.0f), mix(220.0f, 24.0f, hit.roughness));
+    float3 sunSpark = float3(1.0f) * specular * (0.12f + 0.88f * fresnel) * terms.visibility;
+    float3 emissiveEdge = terms.emissiveDirect * (0.04f + 0.30f * fresnel);
+    return reflection + sunSpark + emissiveEdge;
 }
 
 static inline float3 evaluate_metal_direct(thread const HitInfo& hit, float3 rd, thread const LightingTerms& terms) {
@@ -428,15 +442,42 @@ static inline BounceSample sample_dielectric_bounce(thread const HitInfo& hit,
 
     if (chooseReflect) {
         float3 glossyReflect = cosine_sample_hemisphere(perfectReflect, rng, uniforms.sampleIndex + 43u);
-        sample.direction = normalize(mix(perfectReflect, glossyReflect, clamp(hit.roughness * 0.18f, 0.0f, 1.0f)));
+        sample.direction = normalize(mix(perfectReflect, glossyReflect, clamp(hit.roughness * 0.55f, 0.0f, 1.0f)));
         sample.origin = hit.position + hit.normal * 1e-3f;
     } else {
         float3 glossyRefract = cosine_sample_hemisphere(refracted, rng, uniforms.sampleIndex + 47u);
-        sample.direction = normalize(mix(refracted, glossyRefract, clamp(hit.roughness * 0.10f, 0.0f, 1.0f)));
+        sample.direction = normalize(mix(refracted, glossyRefract, clamp(hit.roughness * 0.60f, 0.0f, 1.0f)));
         sample.origin = hit.position - hit.normal * 1e-3f;
     }
-    sample.weight = 0.88f;
+    sample.weight = 0.96f;
     return sample;
+}
+
+static inline float3 sample_dielectric_direction(thread const HitInfo& hit,
+                                                 float3 rd,
+                                                 constant RenderUniforms& uniforms,
+                                                 thread uint& rng,
+                                                 thread bool& choseReflection) {
+    const float ior = 1.52f;
+    float eta = hit.frontFace ? (1.0f / ior) : ior;
+    float3 unitRd = normalize(rd);
+    float cosTheta = min(dot(-unitRd, hit.normal), 1.0f);
+    float sinTheta = sqrt(max(0.0f, 1.0f - cosTheta * cosTheta));
+    float f0 = pow((1.0f - ior) / (1.0f + ior), 2.0f);
+    float reflectProb = schlick_fresnel(cosTheta, f0);
+    bool cannotRefract = eta * sinTheta > 1.0f;
+    float3 refracted;
+    bool didRefract = !cannotRefract && refract_safe(unitRd, hit.normal, eta, refracted);
+    float3 perfectReflect = reflect(rd, hit.normal);
+    choseReflection = cannotRefract || !didRefract || rand01(rng) < reflectProb;
+
+    if (choseReflection) {
+        float3 glossyReflect = cosine_sample_hemisphere(perfectReflect, rng, uniforms.sampleIndex + 43u);
+        return normalize(mix(perfectReflect, glossyReflect, clamp(hit.roughness * 0.55f, 0.0f, 1.0f)));
+    }
+
+    float3 glossyRefract = cosine_sample_hemisphere(refracted, rng, uniforms.sampleIndex + 47u);
+    return normalize(mix(refracted, glossyRefract, clamp(hit.roughness * 0.60f, 0.0f, 1.0f)));
 }
 
 static inline BounceSample sample_metal_bounce(thread const HitInfo& hit,
@@ -471,6 +512,55 @@ static inline BounceSample sample_material_bounce(thread const HitInfo& hit,
     return sample_metal_bounce(hit, rd, uniforms, rng);
 }
 
+static inline float3 trace_secondary_radiance(float3 ro,
+                                              float3 rd,
+                                              constant SphereData* spheres, uint sphereCount,
+                                              constant PlaneData* planes, uint planeCount,
+                                              constant TriangleData* triangles, uint triangleCount,
+                                              constant RenderUniforms& uniforms,
+                                              thread uint& rng) {
+    float3 rayOrigin = ro;
+    float3 rayDir = rd;
+    float3 throughput = float3(1.0f);
+
+    for (uint depth = 0; depth < 5; ++depth) {
+        HitInfo hit;
+        if (!trace_scene(rayOrigin, rayDir,
+                         spheres, sphereCount,
+                         planes, planeCount,
+                         triangles, triangleCount,
+                         hit)) {
+            return throughput * sky_color(rayDir);
+        }
+
+        if (hit.materialType == MATERIAL_EMISSIVE) {
+            return throughput * hit.albedo * hit.emissionStrength;
+        }
+
+        if (hit.materialType != MATERIAL_DIELECTRIC) {
+            return throughput * evaluate_direct_lighting(hit, rayDir,
+                                                         spheres, sphereCount,
+                                                         planes, planeCount,
+                                                         triangles, triangleCount,
+                                                         uniforms, rng);
+        }
+
+        bool choseReflection = false;
+        float3 nextDir = sample_dielectric_direction(hit, rayDir, uniforms, rng, choseReflection);
+        float fresnel = schlick_fresnel(max(dot(hit.normal, normalize(-rayDir)), 0.0f), 0.04f);
+        if (choseReflection) {
+            throughput *= mix(float3(1.0f), hit.albedo, 0.06f) * (0.20f + 0.80f * fresnel);
+            rayOrigin = hit.position + hit.normal * 1e-3f;
+        } else {
+            throughput *= mix(float3(1.0f), hit.albedo, hit.frontFace ? 0.10f : 0.20f) * (0.92f - 0.30f * fresnel);
+            rayOrigin = hit.position - hit.normal * 1e-3f;
+        }
+        rayDir = nextDir;
+    }
+
+    return throughput * sky_color(rayDir);
+}
+
 static inline float3 compose_lambertian_shading(thread const HitInfo& hit, float3 bounceColor, float bounceWeight, float3 direct) {
     return direct + hit.albedo * bounceColor * bounceWeight;
 }
@@ -482,9 +572,12 @@ static inline float3 compose_coated_shading(thread const HitInfo& hit, float3 rd
     return direct + diffuseBounce + specBounce * bounceWeight;
 }
 
-static inline float3 compose_dielectric_shading(thread const HitInfo& hit, float3 bounceColor, float bounceWeight, float3 direct) {
-    float tintStrength = hit.frontFace ? 0.92f : 0.78f;
-    return direct + bounceColor * mix(float3(1.0f), hit.albedo, tintStrength) * bounceWeight;
+static inline float3 compose_dielectric_shading(thread const HitInfo& hit, float3 rd, float3 bounceColor, float bounceWeight, float3 direct) {
+    float fresnel = schlick_fresnel(max(dot(hit.normal, normalize(-rd)), 0.0f), 0.04f);
+    float tintStrength = hit.frontFace ? 0.18f : 0.32f;
+    float3 transmissionTint = mix(float3(1.0f), hit.albedo, tintStrength);
+    float transmissionWeight = mix(0.96f, 0.62f, fresnel);
+    return direct + bounceColor * transmissionTint * bounceWeight * transmissionWeight;
 }
 
 static inline float triangle_area(constant TriangleData& tri) {
@@ -666,24 +759,11 @@ static inline float3 shade_hit(thread const HitInfo& hit,
     float3 bounceColor = float3(0.0f);
     BounceSample bounce = sample_material_bounce(hit, rd, uniforms, rng);
 
-    HitInfo bounceHit;
-    if (trace_scene(bounce.origin, bounce.direction,
-                    spheres, sphereCount,
-                    planes, planeCount,
-                    triangles, triangleCount,
-                    bounceHit)) {
-        if (bounceHit.materialType == MATERIAL_EMISSIVE) {
-            bounceColor = bounceHit.albedo * bounceHit.emissionStrength;
-        } else {
-            bounceColor = evaluate_direct_lighting(bounceHit, bounce.direction,
-                                                   spheres, sphereCount,
-                                                   planes, planeCount,
-                                                   triangles, triangleCount,
-                                                   uniforms, rng);
-        }
-    } else {
-        bounceColor = sky_color(bounce.direction);
-    }
+    bounceColor = trace_secondary_radiance(bounce.origin, bounce.direction,
+                                           spheres, sphereCount,
+                                           planes, planeCount,
+                                           triangles, triangleCount,
+                                           uniforms, rng);
 
     if (hit.materialType == MATERIAL_LAMBERTIAN) {
         return compose_lambertian_shading(hit, bounceColor, bounce.weight, direct);
@@ -692,7 +772,7 @@ static inline float3 shade_hit(thread const HitInfo& hit,
         return compose_coated_shading(hit, rd, bounceColor, bounce.weight, direct);
     }
     if (hit.materialType == MATERIAL_DIELECTRIC) {
-        return compose_dielectric_shading(hit, bounceColor, bounce.weight, direct);
+        return compose_dielectric_shading(hit, rd, bounceColor, bounce.weight, direct);
     }
     return direct + bounceColor * bounce.weight;
 }
