@@ -8,6 +8,7 @@ constant uint MATERIAL_DIELECTRIC = 3;
 constant uint MATERIAL_COATED = 4;
 constant float PI_F = 3.14159265358979323846f;
 constant float INV_PHI = 0.6180339887498948482f;
+constant float ATROUS_KERNEL_5[5] = {1.0f / 16.0f, 0.25f, 0.375f, 0.25f, 1.0f / 16.0f};
 
 struct RenderUniforms {
     uint width;
@@ -70,6 +71,17 @@ struct TriangleData {
     uint materialType;
     float emissionStrength;
     float2 pad3;
+};
+
+struct DenoiseUniforms {
+    uint width;
+    uint height;
+    uint stepSize;
+    float colorSigma;
+    float albedoSigma;
+    float normalSigma;
+    float depthSigma;
+    float roughnessSigma;
 };
 
 struct HitInfo {
@@ -837,4 +849,72 @@ kernel void renderScene(device float4* outAccum [[buffer(0)]],
     outNormalAccum[idx] += float4(guideNormal, 1.0f);
     outAlbedoAccum[idx] += float4(guideAlbedo, 1.0f);
     outDepthRoughnessAccum[idx] += float4(guideDepth, guideRoughness, 0.0f, 1.0f);
+}
+
+kernel void atrousDenoise(device const float4* srcBeauty [[buffer(0)]],
+                          device float4* dstBeauty [[buffer(1)]],
+                          device const float4* guideNormal [[buffer(2)]],
+                          device const float4* guideAlbedo [[buffer(3)]],
+                          device const float4* guideDepthRoughness [[buffer(4)]],
+                          constant DenoiseUniforms& uniforms [[buffer(5)]],
+                          uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= uniforms.width || gid.y >= uniforms.height) return;
+
+    uint idx = gid.y * uniforms.width + gid.x;
+    float3 centerColor = srcBeauty[idx].xyz;
+    float3 centerNormal = normalize(max(guideNormal[idx].xyz * 2.0f - 1.0f, float3(-1.0f)));
+    float3 centerAlbedo = guideAlbedo[idx].xyz;
+    float centerDepth = guideDepthRoughness[idx].x;
+    float centerRoughness = guideDepthRoughness[idx].y;
+    float smoothness = 1.0f - clamp(centerRoughness, 0.0f, 1.0f);
+    float preserveDetail = smoothness * smoothness;
+    float colorSigma = mix(uniforms.colorSigma, uniforms.colorSigma * 0.28f, preserveDetail);
+    float normalSigma = mix(uniforms.normalSigma, uniforms.normalSigma * 0.55f, preserveDetail);
+    float depthSigma = mix(uniforms.depthSigma, uniforms.depthSigma * 0.40f, preserveDetail);
+
+    float3 accum = float3(0.0f);
+    float weightSum = 0.0f;
+    int step = int(uniforms.stepSize);
+
+    float centerWeight = mix(1.0f, 6.0f, preserveDetail);
+    accum += centerColor * centerWeight;
+    weightSum += centerWeight;
+
+    for (int ky = -2; ky <= 2; ++ky) {
+        int sy = int(gid.y) + ky * step;
+        if (sy < 0 || sy >= int(uniforms.height)) continue;
+        for (int kx = -2; kx <= 2; ++kx) {
+            int sx = int(gid.x) + kx * step;
+            if (sx < 0 || sx >= int(uniforms.width)) continue;
+            if (kx == 0 && ky == 0) continue;
+
+            uint sampleIdx = uint(sy) * uniforms.width + uint(sx);
+            float3 sampleColor = srcBeauty[sampleIdx].xyz;
+            float3 sampleNormal = normalize(max(guideNormal[sampleIdx].xyz * 2.0f - 1.0f, float3(-1.0f)));
+            float3 sampleAlbedo = guideAlbedo[sampleIdx].xyz;
+            float sampleDepth = guideDepthRoughness[sampleIdx].x;
+            float sampleRoughness = guideDepthRoughness[sampleIdx].y;
+
+            float colorDist = length(sampleColor - centerColor);
+            float albedoDist = length(sampleAlbedo - centerAlbedo);
+            float normalDist = 1.0f - clamp(dot(sampleNormal, centerNormal), 0.0f, 1.0f);
+            float depthDist = abs(sampleDepth - centerDepth);
+            float roughnessDist = abs(sampleRoughness - centerRoughness);
+
+            float spatialWeight = ATROUS_KERNEL_5[kx + 2] * ATROUS_KERNEL_5[ky + 2];
+            float colorWeight = exp(-(colorDist * colorDist) / (2.0f * uniforms.colorSigma * uniforms.colorSigma));
+            float albedoWeight = exp(-(albedoDist * albedoDist) / (2.0f * uniforms.albedoSigma * uniforms.albedoSigma));
+            float normalWeight = exp(-(normalDist * normalDist) / (2.0f * uniforms.normalSigma * uniforms.normalSigma));
+            float depthWeight = exp(-(depthDist * depthDist) / (2.0f * uniforms.depthSigma * uniforms.depthSigma));
+            float roughnessWeight = exp(-(roughnessDist * roughnessDist) / (2.0f * uniforms.roughnessSigma * uniforms.roughnessSigma));
+            float specularProtection = mix(1.0f, 1.0f - 0.75f * smoothness, clamp(colorDist * 2.5f, 0.0f, 1.0f));
+            float weight = spatialWeight * colorWeight * albedoWeight * normalWeight * depthWeight * roughnessWeight * specularProtection;
+
+            accum += sampleColor * weight;
+            weightSum += weight;
+        }
+    }
+
+    float3 result = weightSum > 0.0f ? accum / weightSum : centerColor;
+    dstBeauty[idx] = float4(result, 1.0f);
 }

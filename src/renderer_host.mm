@@ -19,6 +19,17 @@
 namespace fs = std::filesystem;
 
 namespace {
+struct DenoiseUniforms {
+    uint32_t width;
+    uint32_t height;
+    uint32_t step_size;
+    float color_sigma;
+    float albedo_sigma;
+    float normal_sigma;
+    float depth_sigma;
+    float roughness_sigma;
+};
+
 struct GuidePixel {
     simd_float3 normal;
     simd_float3 albedo;
@@ -97,75 +108,6 @@ id<MTLBuffer> makeSceneBuffer(id<MTLDevice> device, const std::vector<T>& values
                                length:sizeof(T) * values.size()
                               options:MTLResourceStorageModeShared];
 }
-
-std::vector<simd_float3> denoiseBeauty(const std::vector<simd_float3>& beauty,
-                                       const std::vector<GuidePixel>& guides,
-                                       uint32_t width,
-                                       uint32_t height,
-                                       float strength) {
-    if (strength <= 0.0f) {
-        return beauty;
-    }
-    std::vector<simd_float3> filtered(beauty.size(), simd_make_float3(0.0f, 0.0f, 0.0f));
-    const int radius = 2;
-    const float spatialSigma = 1.6f;
-    const float colorSigma = std::max(0.08f, 0.45f * strength);
-    const float albedoSigma = std::max(0.06f, 0.30f * strength);
-    const float normalSigma = std::max(0.04f, 0.18f * strength);
-    const float depthSigma = std::max(0.03f, 0.14f * strength);
-    const float roughnessSigma = std::max(0.02f, 0.12f * strength);
-
-    for (uint32_t y = 0; y < height; ++y) {
-        for (uint32_t x = 0; x < width; ++x) {
-            const size_t idx = static_cast<size_t>(y) * width + x;
-            const simd_float3 centerColor = beauty[idx];
-            const simd_float3 centerAlbedo = guides[idx].albedo;
-            const simd_float3 centerNormal = guides[idx].normal;
-            const float centerDepth = guides[idx].depth;
-            const float centerRoughness = guides[idx].roughness;
-            simd_float3 accum = simd_make_float3(0.0f, 0.0f, 0.0f);
-            float weightSum = 0.0f;
-
-            for (int oy = -radius; oy <= radius; ++oy) {
-                int sy = static_cast<int>(y) + oy;
-                if (sy < 0 || sy >= static_cast<int>(height)) continue;
-                for (int ox = -radius; ox <= radius; ++ox) {
-                    int sx = static_cast<int>(x) + ox;
-                    if (sx < 0 || sx >= static_cast<int>(width)) continue;
-
-                    const size_t sampleIdx = static_cast<size_t>(sy) * width + sx;
-                    const simd_float3 sampleColor = beauty[sampleIdx];
-                    const simd_float3 sampleAlbedo = guides[sampleIdx].albedo;
-                    const simd_float3 sampleNormal = guides[sampleIdx].normal;
-                    const float sampleDepth = guides[sampleIdx].depth;
-                    const float sampleRoughness = guides[sampleIdx].roughness;
-
-                    const float spatial2 = static_cast<float>(ox * ox + oy * oy);
-                    const float colorDist = simd_length(sampleColor - centerColor);
-                    const float albedoDist = simd_length(sampleAlbedo - centerAlbedo);
-                    const float normalDist = 1.0f - std::clamp(simd_dot(sampleNormal, centerNormal), 0.0f, 1.0f);
-                    const float depthDist = std::abs(sampleDepth - centerDepth);
-                    const float roughnessDist = std::abs(sampleRoughness - centerRoughness);
-
-                    const float spatialWeight = std::exp(-spatial2 / (2.0f * spatialSigma * spatialSigma));
-                    const float colorWeight = std::exp(-(colorDist * colorDist) / (2.0f * colorSigma * colorSigma));
-                    const float albedoWeight = std::exp(-(albedoDist * albedoDist) / (2.0f * albedoSigma * albedoSigma));
-                    const float normalWeight = std::exp(-(normalDist * normalDist) / (2.0f * normalSigma * normalSigma));
-                    const float depthWeight = std::exp(-(depthDist * depthDist) / (2.0f * depthSigma * depthSigma));
-                    const float roughnessWeight = std::exp(-(roughnessDist * roughnessDist) / (2.0f * roughnessSigma * roughnessSigma));
-                    const float weight = spatialWeight * colorWeight * albedoWeight * normalWeight * depthWeight * roughnessWeight;
-
-                    accum += sampleColor * weight;
-                    weightSum += weight;
-                }
-            }
-
-            filtered[idx] = weightSum > 0.0f ? accum / weightSum : centerColor;
-        }
-    }
-
-    return filtered;
-}
 }
 
 bool renderSceneToFile(const RenderOptions& options, const SceneDescription& scene, std::string* error_message) {
@@ -195,10 +137,20 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
             if (error_message) *error_message = "Failed to find renderScene kernel.";
             return false;
         }
+        id<MTLFunction> denoiseFunction = [library newFunctionWithName:@"atrousDenoise"];
+        if (denoiseFunction == nil) {
+            if (error_message) *error_message = "Failed to find atrousDenoise kernel.";
+            return false;
+        }
 
         id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&error];
         if (pipeline == nil) {
             if (error_message) *error_message = std::string("Failed to create compute pipeline: ") + (error ? [[error localizedDescription] UTF8String] : "unknown error");
+            return false;
+        }
+        id<MTLComputePipelineState> denoisePipeline = [device newComputePipelineStateWithFunction:denoiseFunction error:&error];
+        if (denoisePipeline == nil) {
+            if (error_message) *error_message = std::string("Failed to create denoise pipeline: ") + (error ? [[error localizedDescription] UTF8String] : "unknown error");
             return false;
         }
 
@@ -283,9 +235,22 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
         const auto* depthRoughnessAccum = static_cast<const float*>([depthRoughnessBuffer contents]);
         std::vector<simd_float3> beauty(pixelCount);
         std::vector<GuidePixel> guides(pixelCount);
+        id<MTLBuffer> beautyBufferA = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
+        id<MTLBuffer> beautyBufferB = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
+        id<MTLBuffer> guideNormalBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
+        id<MTLBuffer> guideAlbedoBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
+        id<MTLBuffer> guideDepthRoughnessBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
+        if (beautyBufferA == nil || beautyBufferB == nil || guideNormalBuffer == nil || guideAlbedoBuffer == nil || guideDepthRoughnessBuffer == nil) {
+            if (error_message) *error_message = "Failed to allocate denoise buffers.";
+            return false;
+        }
         const float invSamples = 1.0f / static_cast<float>(spp);
         float minDepth = std::numeric_limits<float>::max();
         float maxDepth = 0.0f;
+        auto* beautyA = static_cast<float*>([beautyBufferA contents]);
+        auto* guideNormal = static_cast<float*>([guideNormalBuffer contents]);
+        auto* guideAlbedo = static_cast<float*>([guideAlbedoBuffer contents]);
+        auto* guideDepthRoughness = static_cast<float*>([guideDepthRoughnessBuffer contents]);
         for (size_t i = 0; i < pixelCount; ++i) {
             beauty[i] = simd_make_float3(accum[i * 4 + 0], accum[i * 4 + 1], accum[i * 4 + 2]) * invSamples;
             simd_float3 normal = simd_make_float3(normalAccum[i * 4 + 0], normalAccum[i * 4 + 1], normalAccum[i * 4 + 2]) * invSamples;
@@ -296,15 +261,77 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
             guides[i].albedo = albedo;
             guides[i].depth = depth;
             guides[i].roughness = roughness;
+            beautyA[i * 4 + 0] = beauty[i].x;
+            beautyA[i * 4 + 1] = beauty[i].y;
+            beautyA[i * 4 + 2] = beauty[i].z;
+            beautyA[i * 4 + 3] = 1.0f;
+            guideNormal[i * 4 + 0] = normal.x;
+            guideNormal[i * 4 + 1] = normal.y;
+            guideNormal[i * 4 + 2] = normal.z;
+            guideNormal[i * 4 + 3] = 1.0f;
+            guideAlbedo[i * 4 + 0] = albedo.x;
+            guideAlbedo[i * 4 + 1] = albedo.y;
+            guideAlbedo[i * 4 + 2] = albedo.z;
+            guideAlbedo[i * 4 + 3] = 1.0f;
+            guideDepthRoughness[i * 4 + 0] = depth;
+            guideDepthRoughness[i * 4 + 1] = roughness;
+            guideDepthRoughness[i * 4 + 2] = 0.0f;
+            guideDepthRoughness[i * 4 + 3] = 1.0f;
             if (depth > 0.0f) {
                 minDepth = std::min(minDepth, depth);
                 maxDepth = std::max(maxDepth, depth);
             }
         }
 
-        std::vector<simd_float3> finalBeauty = options.denoise
-            ? denoiseBeauty(beauty, guides, options.width, options.height, options.denoise_strength)
-            : beauty;
+        std::vector<simd_float3> finalBeauty = beauty;
+        if (options.denoise && options.denoise_strength > 0.0f) {
+            const float colorSigma = std::max(0.08f, 0.45f * options.denoise_strength);
+            const float albedoSigma = std::max(0.06f, 0.30f * options.denoise_strength);
+            const float normalSigma = std::max(0.04f, 0.18f * options.denoise_strength);
+            const float depthSigma = std::max(0.03f, 0.14f * options.denoise_strength);
+            const float roughnessSigma = std::max(0.02f, 0.12f * options.denoise_strength);
+            const int passCount = 4;
+            id<MTLBuffer> currentSrc = beautyBufferA;
+            id<MTLBuffer> currentDst = beautyBufferB;
+
+            for (int pass = 0; pass < passCount; ++pass) {
+                DenoiseUniforms denoiseUniforms {
+                    options.width,
+                    options.height,
+                    static_cast<uint32_t>(1u << pass),
+                    colorSigma,
+                    albedoSigma,
+                    normalSigma,
+                    depthSigma,
+                    roughnessSigma,
+                };
+                id<MTLBuffer> denoiseUniformBuffer = [device newBufferWithBytes:&denoiseUniforms length:sizeof(DenoiseUniforms) options:MTLResourceStorageModeShared];
+                if (denoiseUniformBuffer == nil) {
+                    if (error_message) *error_message = "Failed to allocate denoise uniform buffer.";
+                    return false;
+                }
+
+                id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
+                id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+                [encoder setComputePipelineState:denoisePipeline];
+                [encoder setBuffer:currentSrc offset:0 atIndex:0];
+                [encoder setBuffer:currentDst offset:0 atIndex:1];
+                [encoder setBuffer:guideNormalBuffer offset:0 atIndex:2];
+                [encoder setBuffer:guideAlbedoBuffer offset:0 atIndex:3];
+                [encoder setBuffer:guideDepthRoughnessBuffer offset:0 atIndex:4];
+                [encoder setBuffer:denoiseUniformBuffer offset:0 atIndex:5];
+                [encoder dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
+                [encoder endEncoding];
+                [commandBuffer commit];
+                [commandBuffer waitUntilCompleted];
+                std::swap(currentSrc, currentDst);
+            }
+
+            const auto* denoised = static_cast<const float*>([currentSrc contents]);
+            for (size_t i = 0; i < pixelCount; ++i) {
+                finalBeauty[i] = simd_make_float3(denoised[i * 4 + 0], denoised[i * 4 + 1], denoised[i * 4 + 2]);
+            }
+        }
 
         if (options.save_guide_buffers) {
             std::vector<simd_float3> normalImage(pixelCount);
