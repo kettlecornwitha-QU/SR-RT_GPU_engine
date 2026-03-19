@@ -18,9 +18,12 @@ struct RenderUniforms {
     uint triangleCount;
     uint samplesPerPixel;
     uint sampleIndex;
+    uint useEnvironmentMap;
     float time;
     float lightAngularRadius;
     float fireflyClamp;
+    float environmentRotation;
+    float environmentExposure;
     float2 pad0;
 };
 
@@ -144,6 +147,7 @@ static inline float3 evaluate_direct_lighting(thread const HitInfo& hit,
                                               constant SphereData* spheres, uint sphereCount,
                                               constant PlaneData* planes, uint planeCount,
                                               constant TriangleData* triangles, uint triangleCount,
+                                              texture2d<float> environmentMap,
                                               constant RenderUniforms& uniforms,
                                               thread uint& rng);
 
@@ -152,6 +156,7 @@ static inline ShadingComponents evaluate_direct_components(thread const HitInfo&
                                                            constant SphereData* spheres, uint sphereCount,
                                                            constant PlaneData* planes, uint planeCount,
                                                            constant TriangleData* triangles, uint triangleCount,
+                                                           texture2d<float> environmentMap,
                                                            constant RenderUniforms& uniforms,
                                                            thread uint& rng);
 
@@ -323,9 +328,25 @@ static inline bool any_occluder(float3 ro, float3 rd,
     return false;
 }
 
-static inline float3 sky_color(float3 dir) {
+static inline float3 analytic_sky_color(float3 dir) {
     float t = clamp(0.5f * (dir.y + 1.0f), 0.0f, 1.0f);
     return mix(float3(0.96f, 0.97f, 1.0f), float3(0.46f, 0.66f, 0.94f), t);
+}
+
+static inline float3 sample_environment(float3 dir,
+                                        texture2d<float> environmentMap,
+                                        constant RenderUniforms& uniforms) {
+    if (uniforms.useEnvironmentMap == 0u) {
+        return analytic_sky_color(dir);
+    }
+
+    constexpr sampler envSampler(coord::normalized, address::repeat, filter::linear);
+    float phi = atan2(dir.z, dir.x) + uniforms.environmentRotation;
+    float theta = acos(clamp(dir.y, -1.0f, 1.0f));
+    float u = fract((phi + PI_F) / (2.0f * PI_F));
+    float v = clamp(theta / PI_F, 0.0f, 1.0f);
+    float3 env = environmentMap.sample(envSampler, float2(u, v)).xyz;
+    return env * uniforms.environmentExposure;
 }
 
 static inline float3 ambient_fill(thread const HitInfo& hit) {
@@ -395,25 +416,33 @@ static inline float3 evaluate_lambertian_direct(thread const HitInfo& hit, threa
     return base + hit.albedo * (1.25f * terms.emissiveDirect);
 }
 
-static inline float3 evaluate_coated_direct(thread const HitInfo& hit, float3 rd, thread const LightingTerms& terms) {
+static inline float3 evaluate_coated_direct(thread const HitInfo& hit,
+                                            float3 rd,
+                                            texture2d<float> environmentMap,
+                                            constant RenderUniforms& uniforms,
+                                            thread const LightingTerms& terms) {
     float3 viewDir = normalize(-rd);
     float ndotv = max(dot(hit.normal, viewDir), 0.0f);
     float3 reflected = reflect(-terms.lightDir, hit.normal);
     float shininess = mix(150.0f, 22.0f, clamp(hit.roughness, 0.0f, 1.0f));
     float specular = pow(max(dot(viewDir, reflected), 0.0f), shininess);
     float fresnel = schlick_fresnel(ndotv, 0.04f);
-    float3 reflectedSky = sky_color(reflect(rd, hit.normal));
+    float3 reflectedSky = sample_environment(reflect(rd, hit.normal), environmentMap, uniforms);
     float3 diffuseBase = hit.albedo * (0.66f * terms.directSun + 0.24f * terms.wrapDiffuse + 1.10f * terms.bouncedAmbient);
     float3 clearcoat = float3(1.0f) * (1.45f * specular * terms.visibility + 0.35f * fresnel);
     float3 environment = reflectedSky * (0.10f + 0.32f * fresnel) * (1.0f - hit.roughness * 0.45f);
     return diffuseBase + hit.albedo * (1.10f * terms.emissiveDirect) + clearcoat + environment;
 }
 
-static inline float3 evaluate_dielectric_direct(thread const HitInfo& hit, float3 rd, thread const LightingTerms& terms) {
+static inline float3 evaluate_dielectric_direct(thread const HitInfo& hit,
+                                                float3 rd,
+                                                texture2d<float> environmentMap,
+                                                constant RenderUniforms& uniforms,
+                                                thread const LightingTerms& terms) {
     float3 viewDir = normalize(-rd);
     float ndotv = max(dot(hit.normal, viewDir), 0.0f);
     float fresnel = schlick_fresnel(ndotv, 0.04f);
-    float3 reflectedSky = sky_color(reflect(rd, hit.normal));
+    float3 reflectedSky = sample_environment(reflect(rd, hit.normal), environmentMap, uniforms);
     float3 reflection = reflectedSky * (0.06f + 0.94f * fresnel) * (1.0f - hit.roughness * 0.18f);
     float specular = pow(max(dot(viewDir, reflect(-terms.lightDir, hit.normal)), 0.0f), mix(220.0f, 24.0f, hit.roughness));
     float3 sunSpark = float3(1.0f) * specular * (0.12f + 0.88f * fresnel) * terms.visibility;
@@ -421,13 +450,17 @@ static inline float3 evaluate_dielectric_direct(thread const HitInfo& hit, float
     return reflection + sunSpark + emissiveEdge;
 }
 
-static inline float3 evaluate_metal_direct(thread const HitInfo& hit, float3 rd, thread const LightingTerms& terms) {
+static inline float3 evaluate_metal_direct(thread const HitInfo& hit,
+                                           float3 rd,
+                                           texture2d<float> environmentMap,
+                                           constant RenderUniforms& uniforms,
+                                           thread const LightingTerms& terms) {
     float3 viewDir = normalize(-rd);
     float3 reflected = reflect(-terms.lightDir, hit.normal);
     float shininess = mix(90.0f, 10.0f, clamp(hit.roughness, 0.0f, 1.0f));
     float specular = pow(max(dot(viewDir, reflected), 0.0f), shininess);
     float fresnel = pow(1.0f - max(dot(viewDir, hit.normal), 0.0f), 5.0f);
-    float3 reflectedSky = sky_color(reflect(rd, hit.normal));
+    float3 reflectedSky = sample_environment(reflect(rd, hit.normal), environmentMap, uniforms);
     float3 metalBase = hit.albedo * (0.18f + 0.30f * terms.bouncedAmbient + 0.16f * terms.wrapDiffuse * terms.visibility);
     float3 metalSpec = mix(hit.albedo, float3(1.0f), 0.45f) * (1.6f * specular * terms.visibility);
     float3 environment = reflectedSky * (0.18f + 0.35f * fresnel) * (1.0f - hit.roughness * 0.55f);
@@ -562,6 +595,7 @@ static inline float3 trace_secondary_radiance(float3 ro,
                                               constant SphereData* spheres, uint sphereCount,
                                               constant PlaneData* planes, uint planeCount,
                                               constant TriangleData* triangles, uint triangleCount,
+                                              texture2d<float> environmentMap,
                                               constant RenderUniforms& uniforms,
                                               thread uint& rng) {
     float3 rayOrigin = ro;
@@ -575,7 +609,7 @@ static inline float3 trace_secondary_radiance(float3 ro,
                          planes, planeCount,
                          triangles, triangleCount,
                          hit)) {
-            return throughput * sky_color(rayDir);
+            return throughput * sample_environment(rayDir, environmentMap, uniforms);
         }
 
         if (hit.materialType == MATERIAL_EMISSIVE) {
@@ -587,6 +621,7 @@ static inline float3 trace_secondary_radiance(float3 ro,
                                                          spheres, sphereCount,
                                                          planes, planeCount,
                                                          triangles, triangleCount,
+                                                         environmentMap,
                                                          uniforms, rng);
         }
 
@@ -603,7 +638,7 @@ static inline float3 trace_secondary_radiance(float3 ro,
         rayDir = nextDir;
     }
 
-    return throughput * sky_color(rayDir);
+    return throughput * sample_environment(rayDir, environmentMap, uniforms);
 }
 
 static inline ShadingComponents make_shading_components(float3 diffuse = float3(0.0f),
@@ -798,12 +833,14 @@ static inline float3 evaluate_direct_lighting(thread const HitInfo& hit,
                                               constant SphereData* spheres, uint sphereCount,
                                               constant PlaneData* planes, uint planeCount,
                                               constant TriangleData* triangles, uint triangleCount,
+                                              texture2d<float> environmentMap,
                                               constant RenderUniforms& uniforms,
                                               thread uint& rng) {
     return sum_components(evaluate_direct_components(hit, rd,
                                                      spheres, sphereCount,
                                                      planes, planeCount,
                                                      triangles, triangleCount,
+                                                     environmentMap,
                                                      uniforms, rng));
 }
 
@@ -812,6 +849,7 @@ static inline ShadingComponents evaluate_direct_components(thread const HitInfo&
                                                            constant SphereData* spheres, uint sphereCount,
                                                            constant PlaneData* planes, uint planeCount,
                                                            constant TriangleData* triangles, uint triangleCount,
+                                                           texture2d<float> environmentMap,
                                                            constant RenderUniforms& uniforms,
                                                            thread uint& rng) {
     if (hit.materialType == MATERIAL_EMISSIVE) {
@@ -835,7 +873,7 @@ static inline ShadingComponents evaluate_direct_components(thread const HitInfo&
         float shininess = mix(150.0f, 22.0f, clamp(hit.roughness, 0.0f, 1.0f));
         float specular = pow(max(dot(viewDir, reflected), 0.0f), shininess);
         float fresnel = schlick_fresnel(ndotv, 0.04f);
-        float3 reflectedSky = sky_color(reflect(rd, hit.normal));
+        float3 reflectedSky = sample_environment(reflect(rd, hit.normal), environmentMap, uniforms);
         float3 diffuseBase = hit.albedo * (0.66f * terms.directSun + 0.24f * terms.wrapDiffuse + 1.10f * terms.bouncedAmbient);
         diffuseBase += hit.albedo * (1.10f * terms.emissiveDirect);
         float3 clearcoat = float3(1.0f) * (1.45f * specular * terms.visibility + 0.35f * fresnel);
@@ -844,10 +882,10 @@ static inline ShadingComponents evaluate_direct_components(thread const HitInfo&
     }
 
     if (hit.materialType == MATERIAL_DIELECTRIC) {
-        return make_shading_components(float3(0.0f), evaluate_dielectric_direct(hit, rd, terms), float3(0.0f));
+        return make_shading_components(float3(0.0f), evaluate_dielectric_direct(hit, rd, environmentMap, uniforms, terms), float3(0.0f));
     }
 
-    return make_shading_components(float3(0.0f), evaluate_metal_direct(hit, rd, terms), float3(0.0f));
+    return make_shading_components(float3(0.0f), evaluate_metal_direct(hit, rd, environmentMap, uniforms, terms), float3(0.0f));
 }
 
 static inline ShadingResult shade_hit(thread const HitInfo& hit,
@@ -855,12 +893,14 @@ static inline ShadingResult shade_hit(thread const HitInfo& hit,
                                       constant SphereData* spheres, uint sphereCount,
                                       constant PlaneData* planes, uint planeCount,
                                       constant TriangleData* triangles, uint triangleCount,
+                                      texture2d<float> environmentMap,
                                       constant RenderUniforms& uniforms,
                                       thread uint& rng) {
     ShadingComponents direct = evaluate_direct_components(hit, rd,
                                                           spheres, sphereCount,
                                                           planes, planeCount,
                                                           triangles, triangleCount,
+                                                          environmentMap,
                                                           uniforms, rng);
     if (hit.materialType == MATERIAL_EMISSIVE) {
         return make_shading_result(direct);
@@ -872,6 +912,7 @@ static inline ShadingResult shade_hit(thread const HitInfo& hit,
                                            spheres, sphereCount,
                                            planes, planeCount,
                                            triangles, triangleCount,
+                                           environmentMap,
                                            uniforms, rng);
 
     if (hit.materialType == MATERIAL_LAMBERTIAN) {
@@ -902,6 +943,7 @@ kernel void renderScene(device float4* outAccum [[buffer(0)]],
                         device float4* outTransmissionAccum [[buffer(11)]],
                         device float4* outMomentAccum [[buffer(12)]],
                         device const uint* activeMask [[buffer(13)]],
+                        texture2d<float> environmentMap [[texture(0)]],
                         uint2 gid [[thread_position_in_grid]]) {
     if (gid.x >= uniforms.width || gid.y >= uniforms.height) return;
     uint idx = gid.y * uniforms.width + gid.x;
@@ -929,9 +971,10 @@ kernel void renderScene(device float4* outAccum [[buffer(0)]],
                             spheres, uniforms.sphereCount,
                             planes, uniforms.planeCount,
                             triangles, uniforms.triangleCount,
+                            environmentMap,
                             uniforms, rng);
     } else {
-        shading.diffuse = sky_color(rd);
+        shading.diffuse = sample_environment(rd, environmentMap, uniforms);
         shading.specular = float3(0.0f);
         shading.transmission = float3(0.0f);
         shading.beauty = shading.diffuse;
@@ -958,7 +1001,7 @@ kernel void renderScene(device float4* outAccum [[buffer(0)]],
     outMomentAccum[idx] += float4(color * color, 1.0f);
 
     float3 guideNormal = hit.hit ? hit.normal * 0.5f + 0.5f : normalize(rd) * 0.5f + 0.5f;
-    float3 guideAlbedo = hit.hit ? hit.albedo : sky_color(rd);
+    float3 guideAlbedo = hit.hit ? hit.albedo : sample_environment(rd, environmentMap, uniforms);
     float guideDepth = hit.hit ? hit.t : 0.0f;
     float guideRoughness = hit.hit ? clamp(hit.roughness, 0.0f, 1.0f) : 1.0f;
     outNormalAccum[idx] += float4(guideNormal, 1.0f);

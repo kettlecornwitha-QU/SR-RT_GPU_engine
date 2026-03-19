@@ -6,14 +6,17 @@
 #include "renderer_host.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -37,12 +40,226 @@ struct GuidePixel {
     float roughness;
 };
 
+struct ImageData {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    std::vector<simd_float4> pixels;
+};
+
 std::string readTextFile(const fs::path& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return {};
     std::ostringstream ss;
     ss << in.rdbuf();
     return ss.str();
+}
+
+std::string trim(std::string_view value) {
+    size_t start = 0;
+    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start]))) {
+        ++start;
+    }
+    size_t end = value.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+        --end;
+    }
+    return std::string(value.substr(start, end - start));
+}
+
+bool readNextToken(std::istream& input, std::string& token) {
+    token.clear();
+    while (input >> token) {
+        if (!token.empty() && token[0] == '#') {
+            std::string comment;
+            std::getline(input, comment);
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+bool loadPPMImage(const fs::path& path, ImageData& image) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+
+    std::string magic;
+    if (!readNextToken(in, magic) || (magic != "P3" && magic != "P6")) return false;
+
+    std::string token;
+    if (!readNextToken(in, token)) return false;
+    image.width = static_cast<uint32_t>(std::stoul(token));
+    if (!readNextToken(in, token)) return false;
+    image.height = static_cast<uint32_t>(std::stoul(token));
+    if (!readNextToken(in, token)) return false;
+    const float maxValue = std::max(1.0f, std::stof(token));
+
+    image.pixels.resize(static_cast<size_t>(image.width) * image.height);
+    if (magic == "P3") {
+        for (size_t i = 0; i < image.pixels.size(); ++i) {
+            std::string rs;
+            std::string gs;
+            std::string bs;
+            if (!readNextToken(in, rs) || !readNextToken(in, gs) || !readNextToken(in, bs)) return false;
+            image.pixels[i] = simd_make_float4(std::stof(rs) / maxValue,
+                                               std::stof(gs) / maxValue,
+                                               std::stof(bs) / maxValue,
+                                               1.0f);
+        }
+        return true;
+    }
+
+    in.get();
+    std::vector<uint8_t> rgb(static_cast<size_t>(image.width) * image.height * 3);
+    in.read(reinterpret_cast<char*>(rgb.data()), static_cast<std::streamsize>(rgb.size()));
+    if (in.gcount() != static_cast<std::streamsize>(rgb.size())) return false;
+    for (size_t i = 0; i < image.pixels.size(); ++i) {
+        image.pixels[i] = simd_make_float4(float(rgb[i * 3 + 0]) / maxValue,
+                                           float(rgb[i * 3 + 1]) / maxValue,
+                                           float(rgb[i * 3 + 2]) / maxValue,
+                                           1.0f);
+    }
+    return true;
+}
+
+bool parseHdrResolution(const std::string& line, uint32_t& width, uint32_t& height) {
+    char axisY = 0;
+    char signY = 0;
+    char axisX = 0;
+    char signX = 0;
+    int h = 0;
+    int w = 0;
+    if (std::sscanf(line.c_str(), " %c%c %d %c%c %d", &signY, &axisY, &h, &signX, &axisX, &w) != 6) {
+        return false;
+    }
+    if (axisY != 'Y' || axisX != 'X' || h <= 0 || w <= 0) {
+        return false;
+    }
+    height = static_cast<uint32_t>(h);
+    width = static_cast<uint32_t>(w);
+    return true;
+}
+
+simd_float3 rgbeToFloat(uint8_t r, uint8_t g, uint8_t b, uint8_t e) {
+    if (e == 0) return simd_make_float3(0.0f, 0.0f, 0.0f);
+    const float scale = std::ldexp(1.0f, int(e) - (128 + 8));
+    return simd_make_float3((float(r) + 0.5f) * scale,
+                            (float(g) + 0.5f) * scale,
+                            (float(b) + 0.5f) * scale);
+}
+
+bool loadHDRImage(const fs::path& path, ImageData& image) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+
+    std::string line;
+    if (!std::getline(in, line) || line.rfind("#?RADIANCE", 0) != 0) return false;
+
+    bool foundFormat = false;
+    while (std::getline(in, line)) {
+        line = trim(line);
+        if (line.empty()) break;
+        if (line.rfind("FORMAT=", 0) == 0 && line.find("32-bit_rle_rgbe") != std::string::npos) {
+            foundFormat = true;
+        }
+    }
+    if (!foundFormat) return false;
+    if (!std::getline(in, line)) return false;
+
+    uint32_t width = 0;
+    uint32_t height = 0;
+    if (!parseHdrResolution(line, width, height)) return false;
+
+    image.width = width;
+    image.height = height;
+    image.pixels.resize(static_cast<size_t>(width) * height);
+    std::vector<uint8_t> scanline(static_cast<size_t>(width) * 4);
+
+    for (uint32_t y = 0; y < height; ++y) {
+        uint8_t header[4] = {0, 0, 0, 0};
+        in.read(reinterpret_cast<char*>(header), 4);
+        if (!in) return false;
+
+        if (width >= 8 && width <= 0x7fff && header[0] == 2 && header[1] == 2 &&
+            static_cast<uint32_t>((header[2] << 8) | header[3]) == width) {
+            for (int channel = 0; channel < 4; ++channel) {
+                size_t x = 0;
+                while (x < width) {
+                    uint8_t count = 0;
+                    uint8_t value = 0;
+                    in.read(reinterpret_cast<char*>(&count), 1);
+                    in.read(reinterpret_cast<char*>(&value), 1);
+                    if (!in) return false;
+                    if (count > 128) {
+                        size_t runLength = size_t(count - 128);
+                        for (size_t i = 0; i < runLength && x < width; ++i, ++x) {
+                            scanline[x * 4 + channel] = value;
+                        }
+                    } else {
+                        scanline[x * 4 + channel] = value;
+                        ++x;
+                        for (size_t i = 1; i < count && x < width; ++i, ++x) {
+                            in.read(reinterpret_cast<char*>(&scanline[x * 4 + channel]), 1);
+                            if (!in) return false;
+                        }
+                    }
+                }
+            }
+        } else {
+            scanline[0] = header[0];
+            scanline[1] = header[1];
+            scanline[2] = header[2];
+            scanline[3] = header[3];
+            in.read(reinterpret_cast<char*>(scanline.data() + 4), static_cast<std::streamsize>(scanline.size() - 4));
+            if (!in) return false;
+        }
+
+        for (uint32_t x = 0; x < width; ++x) {
+            simd_float3 color = rgbeToFloat(scanline[x * 4 + 0],
+                                            scanline[x * 4 + 1],
+                                            scanline[x * 4 + 2],
+                                            scanline[x * 4 + 3]);
+            image.pixels[static_cast<size_t>(y) * width + x] = simd_make_float4(color.x, color.y, color.z, 1.0f);
+        }
+    }
+    return true;
+}
+
+bool loadEnvironmentImage(const fs::path& path, ImageData& image) {
+    const std::string ext = path.extension().string();
+    if (ext == ".hdr" || ext == ".HDR") {
+        return loadHDRImage(path, image);
+    }
+    if (ext == ".ppm" || ext == ".PPM") {
+        return loadPPMImage(path, image);
+    }
+    return false;
+}
+
+id<MTLTexture> makeEnvironmentTexture(id<MTLDevice> device, const ImageData& image) {
+    if (image.width == 0 || image.height == 0 || image.pixels.empty()) return nil;
+    MTLTextureDescriptor* descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
+                                                                                          width:image.width
+                                                                                         height:image.height
+                                                                                      mipmapped:NO];
+    descriptor.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> texture = [device newTextureWithDescriptor:descriptor];
+    if (texture == nil) return nil;
+
+    MTLRegion region = MTLRegionMake2D(0, 0, image.width, image.height);
+    [texture replaceRegion:region
+               mipmapLevel:0
+                 withBytes:image.pixels.data()
+               bytesPerRow:image.width * sizeof(simd_float4)];
+    return texture;
+}
+
+ImageData makeFallbackEnvironment() {
+    ImageData image;
+    image.width = 1;
+    image.height = 1;
+    image.pixels = {simd_make_float4(0.0f, 0.0f, 0.0f, 1.0f)};
+    return image;
 }
 
 bool writePPM(const fs::path& outputPath, uint32_t width, uint32_t height, const std::vector<uint8_t>& rgb) {
@@ -154,6 +371,25 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
             return false;
         }
 
+        ImageData environmentImage = makeFallbackEnvironment();
+        bool useEnvironmentMap = false;
+        if (!options.environment_map.empty()) {
+            fs::path environmentPath = fs::path(options.environment_map);
+            if (!environmentPath.is_absolute()) {
+                environmentPath = fs::current_path() / environmentPath;
+            }
+            if (!loadEnvironmentImage(environmentPath, environmentImage)) {
+                if (error_message) *error_message = "Failed to load environment map. Supported formats: .hdr, .ppm";
+                return false;
+            }
+            useEnvironmentMap = true;
+        }
+        id<MTLTexture> environmentTexture = makeEnvironmentTexture(device, environmentImage);
+        if (environmentTexture == nil) {
+            if (error_message) *error_message = "Failed to create Metal environment texture.";
+            return false;
+        }
+
         const size_t pixelCount = static_cast<size_t>(options.width) * static_cast<size_t>(options.height);
         id<MTLBuffer> outBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
         id<MTLBuffer> normalBuffer = [device newBufferWithLength:pixelCount * sizeof(float) * 4 options:MTLResourceStorageModeShared];
@@ -217,9 +453,12 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
                 static_cast<uint32_t>(scene.triangles.size()),
                 spp,
                 sample,
+                useEnvironmentMap ? 1u : 0u,
                 0.0f,
                 0.035f,
                 options.firefly_clamp,
+                options.environment_rotation * (3.14159265358979323846f / 180.0f),
+                std::exp2(options.environment_exposure),
                 simd_make_float2(0.0f, 0.0f),
             };
 
@@ -246,6 +485,7 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
             [encoder setBuffer:transmissionBuffer offset:0 atIndex:11];
             [encoder setBuffer:momentBuffer offset:0 atIndex:12];
             [encoder setBuffer:activeMaskBuffer offset:0 atIndex:13];
+            [encoder setTexture:environmentTexture atIndex:0];
             [encoder dispatchThreads:threadsPerGrid threadsPerThreadgroup:threadsPerThreadgroup];
             [encoder endEncoding];
             [commandBuffer commit];

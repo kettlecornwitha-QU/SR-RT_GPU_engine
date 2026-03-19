@@ -181,7 +181,9 @@ std::string buildOptionsSchemaJson() {
     out << "    \"adaptive_min_spp\": 8,\n";
     out << "    \"firefly_clamp\": 6.0,\n";
     out << "    \"denoise_strength\": 1.0,\n";
-    out << "    \"adaptive_threshold\": 0.02\n";
+    out << "    \"adaptive_threshold\": 0.02,\n";
+    out << "    \"environment_rotation\": 0.0,\n";
+    out << "    \"environment_exposure\": 1.0\n";
     out << "  },\n";
     out << "  \"choices\": {\n";
     out << "    \"scene\": [\"starter\", \"wide\", \"materials\", \"roughness\"]\n";
@@ -189,6 +191,7 @@ std::string buildOptionsSchemaJson() {
     out << "  \"defaults\": {\n";
     out << "    \"scene\": \"starter\",\n";
     out << "    \"output\": \"outputs/metal_starter.ppm\",\n";
+    out << "    \"environment_map\": \"\",\n";
     out << "    \"denoise\": true,\n";
     out << "    \"adaptive_sampling\": false,\n";
     out << "    \"save_guide_buffers\": false\n";
@@ -198,6 +201,7 @@ std::string buildOptionsSchemaJson() {
     out << "    \"save_png\": false,\n";
     out << "    \"save_guide_buffers\": true,\n";
     out << "    \"adaptive_sampling\": true,\n";
+    out << "    \"environment_maps\": [\".hdr\", \".ppm\"],\n";
     out << "    \"material_types\": [\"lambertian\", \"metal\", \"emissive\", \"dielectric\", \"coated\"],\n";
     out << "    \"hard_shadows\": true,\n";
     out << "    \"multisampling\": true,\n";

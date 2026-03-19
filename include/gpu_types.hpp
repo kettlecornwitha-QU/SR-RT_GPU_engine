@@ -21,9 +21,12 @@ struct RenderOptions {
     uint32_t adaptive_min_spp = 8;
     std::string output = "outputs/metal_starter.ppm";
     std::string scene = "starter";
+    std::string environment_map;
     float firefly_clamp = 6.0f;
     float denoise_strength = 1.0f;
     float adaptive_threshold = 0.02f;
+    float environment_rotation = 0.0f;
+    float environment_exposure = 1.0f;
     bool denoise = true;
     bool adaptive_sampling = false;
     bool save_guide_buffers = false;
@@ -39,9 +42,12 @@ struct RenderUniforms {
     uint32_t triangleCount;
     uint32_t samplesPerPixel;
     uint32_t sampleIndex;
+    uint32_t useEnvironmentMap;
     float time;
     float lightAngularRadius;
     float fireflyClamp;
+    float environmentRotation;
+    float environmentExposure;
     simd_float2 pad0;
 };
 

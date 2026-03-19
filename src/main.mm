@@ -36,6 +36,10 @@ static bool parseArgs(int argc, char** argv, RenderOptions& cfg) {
             const char* value = requireValue("--output");
             if (!value) return false;
             cfg.output = value;
+        } else if (arg == "--environment-map") {
+            const char* value = requireValue("--environment-map");
+            if (!value) return false;
+            cfg.environment_map = value;
         } else if (arg == "--scene") {
             const char* value = requireValue("--scene");
             if (!value) return false;
@@ -52,6 +56,14 @@ static bool parseArgs(int argc, char** argv, RenderOptions& cfg) {
             const char* value = requireValue("--adaptive-threshold");
             if (!value) return false;
             cfg.adaptive_threshold = std::stof(value);
+        } else if (arg == "--environment-rotation") {
+            const char* value = requireValue("--environment-rotation");
+            if (!value) return false;
+            cfg.environment_rotation = std::stof(value);
+        } else if (arg == "--environment-exposure") {
+            const char* value = requireValue("--environment-exposure");
+            if (!value) return false;
+            cfg.environment_exposure = std::stof(value);
         } else if (arg == "--adaptive-sampling") {
             cfg.adaptive_sampling = true;
         } else if (arg == "--no-denoise") {
@@ -63,7 +75,7 @@ static bool parseArgs(int argc, char** argv, RenderOptions& cfg) {
         } else if (arg == "--print-scene-registry") {
             cfg.print_scene_registry = true;
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: sr_rt_gpu [--scene name] [--width N] [--height N] [--spp N] [--adaptive-sampling] [--adaptive-min-spp N] [--adaptive-threshold V] [--output path] [--firefly-clamp V] [--denoise-strength V] [--no-denoise] [--save-guide-buffers] [--print-options-schema] [--print-scene-registry]\n";
+            std::cout << "Usage: sr_rt_gpu [--scene name] [--width N] [--height N] [--spp N] [--adaptive-sampling] [--adaptive-min-spp N] [--adaptive-threshold V] [--environment-map path] [--environment-rotation deg] [--environment-exposure V] [--output path] [--firefly-clamp V] [--denoise-strength V] [--no-denoise] [--save-guide-buffers] [--print-options-schema] [--print-scene-registry]\n";
             return false;
         } else {
             std::cerr << "Unknown argument: " << arg << "\n";
@@ -112,6 +124,11 @@ int main(int argc, char** argv) {
     if (cfg.adaptive_sampling) {
         std::cout << "Adaptive sampling enabled with min_spp=" << cfg.adaptive_min_spp
                   << " and threshold=" << cfg.adaptive_threshold << "\n";
+    }
+    if (!cfg.environment_map.empty()) {
+        std::cout << "Environment map: " << cfg.environment_map
+                  << " rotation=" << cfg.environment_rotation
+                  << " exposure=" << cfg.environment_exposure << "\n";
     }
     return 0;
 }
