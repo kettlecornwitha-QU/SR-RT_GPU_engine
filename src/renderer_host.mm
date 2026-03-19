@@ -40,6 +40,15 @@ struct GuidePixel {
     float roughness;
 };
 
+struct ToneMapSettings {
+    bool enabled = true;
+    std::string mode = "filmic";
+    float display_exposure = 0.0f;
+    float contrast = 1.0f;
+    float saturation = 1.0f;
+    float gamma = 2.2f;
+};
+
 struct ImageData {
     uint32_t width = 0;
     uint32_t height = 0;
@@ -272,28 +281,62 @@ bool writePPM(const fs::path& outputPath, uint32_t width, uint32_t height, const
     return static_cast<bool>(out);
 }
 
-std::vector<uint8_t> encodeRGB(const std::vector<simd_float3>& image, bool tonemap) {
+simd_float3 applySaturation(simd_float3 color, float saturation) {
+    const float luma = 0.2126f * color.x + 0.7152f * color.y + 0.0722f * color.z;
+    const simd_float3 gray = simd_make_float3(luma, luma, luma);
+    return simd_mix(gray, color, saturation);
+}
+
+simd_float3 applyContrast(simd_float3 color, float contrast) {
+    return simd_make_float3(0.5f, 0.5f, 0.5f) + (color - simd_make_float3(0.5f, 0.5f, 0.5f)) * contrast;
+}
+
+simd_float3 filmicToneMap(simd_float3 color) {
+    auto mapChannel = [](float x) {
+        const float a = 2.51f;
+        const float b = 0.03f;
+        const float c = 2.43f;
+        const float d = 0.59f;
+        const float e = 0.14f;
+        return std::clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0f, 1.0f);
+    };
+    return simd_make_float3(mapChannel(color.x), mapChannel(color.y), mapChannel(color.z));
+}
+
+simd_float3 reinhardToneMap(simd_float3 color) {
+    return color / (simd_make_float3(1.0f, 1.0f, 1.0f) + color);
+}
+
+simd_float3 toneMapColor(simd_float3 color, const ToneMapSettings& settings) {
+    if (!settings.enabled) {
+        return simd_clamp(color, simd_make_float3(0.0f, 0.0f, 0.0f), simd_make_float3(1.0f, 1.0f, 1.0f));
+    }
+
+    color *= std::exp2(settings.display_exposure);
+    if (settings.mode == "linear") {
+        color = simd_clamp(color, simd_make_float3(0.0f, 0.0f, 0.0f), simd_make_float3(1.0f, 1.0f, 1.0f));
+    } else if (settings.mode == "reinhard") {
+        color = reinhardToneMap(simd_max(color, simd_make_float3(0.0f, 0.0f, 0.0f)));
+    } else {
+        color = filmicToneMap(simd_max(color, simd_make_float3(0.0f, 0.0f, 0.0f)));
+    }
+
+    color = applyContrast(color, settings.contrast);
+    color = applySaturation(color, settings.saturation);
+    const float invGamma = 1.0f / std::max(0.1f, settings.gamma);
+    color = simd_make_float3(std::pow(std::max(0.0f, color.x), invGamma),
+                             std::pow(std::max(0.0f, color.y), invGamma),
+                             std::pow(std::max(0.0f, color.z), invGamma));
+    return simd_clamp(color, simd_make_float3(0.0f, 0.0f, 0.0f), simd_make_float3(1.0f, 1.0f, 1.0f));
+}
+
+std::vector<uint8_t> encodeRGB(const std::vector<simd_float3>& image, const ToneMapSettings& settings) {
     std::vector<uint8_t> rgb(image.size() * 3);
     for (size_t i = 0; i < image.size(); ++i) {
-        float r = image[i].x;
-        float g = image[i].y;
-        float b = image[i].z;
-
-        if (tonemap) {
-            r = r / (1.0f + r);
-            g = g / (1.0f + g);
-            b = b / (1.0f + b);
-            r = std::sqrt(std::max(0.0f, r));
-            g = std::sqrt(std::max(0.0f, g));
-            b = std::sqrt(std::max(0.0f, b));
-        }
-
-        r = std::clamp(r, 0.0f, 1.0f);
-        g = std::clamp(g, 0.0f, 1.0f);
-        b = std::clamp(b, 0.0f, 1.0f);
-        rgb[i * 3 + 0] = static_cast<uint8_t>(r * 255.0f);
-        rgb[i * 3 + 1] = static_cast<uint8_t>(g * 255.0f);
-        rgb[i * 3 + 2] = static_cast<uint8_t>(b * 255.0f);
+        simd_float3 mapped = toneMapColor(image[i], settings);
+        rgb[i * 3 + 0] = static_cast<uint8_t>(mapped.x * 255.0f);
+        rgb[i * 3 + 1] = static_cast<uint8_t>(mapped.y * 255.0f);
+        rgb[i * 3 + 2] = static_cast<uint8_t>(mapped.z * 255.0f);
     }
     return rgb;
 }
@@ -591,6 +634,22 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
         }
 
         std::vector<simd_float3> finalBeauty = beauty;
+        const ToneMapSettings toneSettings {
+            true,
+            options.tonemap,
+            options.display_exposure,
+            options.tone_contrast,
+            options.tone_saturation,
+            options.output_gamma,
+        };
+        const ToneMapSettings rawSettings {
+            false,
+            "linear",
+            0.0f,
+            1.0f,
+            1.0f,
+            1.0f,
+        };
         if (options.denoise && options.denoise_strength > 0.0f) {
             const float baseColorSigma = std::max(0.08f, 0.45f * options.denoise_strength);
             const float baseAlbedoSigma = std::max(0.06f, 0.30f * options.denoise_strength);
@@ -694,41 +753,41 @@ bool renderSceneToFile(const RenderOptions& options, const SceneDescription& sce
                 samplesImage[i] = simd_make_float3(normalizedSamples, normalizedSamples, normalizedSamples);
             }
 
-            if (!writePPM(sidecarPathFor(options.output, "_normal"), options.width, options.height, encodeRGB(normalImage, false))) {
+            if (!writePPM(sidecarPathFor(options.output, "_normal"), options.width, options.height, encodeRGB(normalImage, rawSettings))) {
                 if (error_message) *error_message = "Failed to write normal guide image.";
                 return false;
             }
-            if (!writePPM(sidecarPathFor(options.output, "_albedo"), options.width, options.height, encodeRGB(albedoImage, false))) {
+            if (!writePPM(sidecarPathFor(options.output, "_albedo"), options.width, options.height, encodeRGB(albedoImage, rawSettings))) {
                 if (error_message) *error_message = "Failed to write albedo guide image.";
                 return false;
             }
-            if (!writePPM(sidecarPathFor(options.output, "_depth"), options.width, options.height, encodeRGB(depthImage, false))) {
+            if (!writePPM(sidecarPathFor(options.output, "_depth"), options.width, options.height, encodeRGB(depthImage, rawSettings))) {
                 if (error_message) *error_message = "Failed to write depth guide image.";
                 return false;
             }
-            if (!writePPM(sidecarPathFor(options.output, "_roughness"), options.width, options.height, encodeRGB(roughnessImage, false))) {
+            if (!writePPM(sidecarPathFor(options.output, "_roughness"), options.width, options.height, encodeRGB(roughnessImage, rawSettings))) {
                 if (error_message) *error_message = "Failed to write roughness guide image.";
                 return false;
             }
-            if (!writePPM(sidecarPathFor(options.output, "_samples"), options.width, options.height, encodeRGB(samplesImage, false))) {
+            if (!writePPM(sidecarPathFor(options.output, "_samples"), options.width, options.height, encodeRGB(samplesImage, rawSettings))) {
                 if (error_message) *error_message = "Failed to write sample-count image.";
                 return false;
             }
-            if (!writePPM(sidecarPathFor(options.output, "_diffuse"), options.width, options.height, encodeRGB(diffuseImage, true))) {
+            if (!writePPM(sidecarPathFor(options.output, "_diffuse"), options.width, options.height, encodeRGB(diffuseImage, toneSettings))) {
                 if (error_message) *error_message = "Failed to write diffuse component image.";
                 return false;
             }
-            if (!writePPM(sidecarPathFor(options.output, "_specular"), options.width, options.height, encodeRGB(specularImage, true))) {
+            if (!writePPM(sidecarPathFor(options.output, "_specular"), options.width, options.height, encodeRGB(specularImage, toneSettings))) {
                 if (error_message) *error_message = "Failed to write specular component image.";
                 return false;
             }
-            if (!writePPM(sidecarPathFor(options.output, "_transmission"), options.width, options.height, encodeRGB(transmissionImage, true))) {
+            if (!writePPM(sidecarPathFor(options.output, "_transmission"), options.width, options.height, encodeRGB(transmissionImage, toneSettings))) {
                 if (error_message) *error_message = "Failed to write transmission component image.";
                 return false;
             }
         }
 
-        if (!writePPM(options.output, options.width, options.height, encodeRGB(finalBeauty, true))) {
+        if (!writePPM(options.output, options.width, options.height, encodeRGB(finalBeauty, toneSettings))) {
             if (error_message) *error_message = "Failed to write output image.";
             return false;
         }

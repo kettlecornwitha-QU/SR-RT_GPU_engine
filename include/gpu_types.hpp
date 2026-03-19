@@ -27,6 +27,11 @@ struct RenderOptions {
     float adaptive_threshold = 0.02f;
     float environment_rotation = 0.0f;
     float environment_exposure = 1.0f;
+    float display_exposure = -0.35f;
+    float tone_contrast = 1.08f;
+    float tone_saturation = 1.03f;
+    float output_gamma = 2.2f;
+    std::string tonemap = "filmic";
     bool denoise = true;
     bool adaptive_sampling = false;
     bool save_guide_buffers = false;

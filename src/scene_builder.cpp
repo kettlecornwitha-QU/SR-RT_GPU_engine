@@ -183,7 +183,11 @@ std::string buildOptionsSchemaJson() {
     out << "    \"denoise_strength\": 1.0,\n";
     out << "    \"adaptive_threshold\": 0.02,\n";
     out << "    \"environment_rotation\": 0.0,\n";
-    out << "    \"environment_exposure\": 1.0\n";
+    out << "    \"environment_exposure\": 1.0,\n";
+    out << "    \"display_exposure\": -0.35,\n";
+    out << "    \"tone_contrast\": 1.08,\n";
+    out << "    \"tone_saturation\": 1.03,\n";
+    out << "    \"output_gamma\": 2.2\n";
     out << "  },\n";
     out << "  \"choices\": {\n";
     out << "    \"scene\": [\"starter\", \"wide\", \"materials\", \"roughness\"]\n";
@@ -192,6 +196,7 @@ std::string buildOptionsSchemaJson() {
     out << "    \"scene\": \"starter\",\n";
     out << "    \"output\": \"outputs/metal_starter.ppm\",\n";
     out << "    \"environment_map\": \"\",\n";
+    out << "    \"tonemap\": \"filmic\",\n";
     out << "    \"denoise\": true,\n";
     out << "    \"adaptive_sampling\": false,\n";
     out << "    \"save_guide_buffers\": false\n";
@@ -202,12 +207,14 @@ std::string buildOptionsSchemaJson() {
     out << "    \"save_guide_buffers\": true,\n";
     out << "    \"adaptive_sampling\": true,\n";
     out << "    \"environment_maps\": [\".hdr\", \".ppm\"],\n";
+    out << "    \"tonemap_modes\": [\"filmic\", \"reinhard\", \"linear\"],\n";
     out << "    \"material_types\": [\"lambertian\", \"metal\", \"emissive\", \"dielectric\", \"coated\"],\n";
     out << "    \"hard_shadows\": true,\n";
     out << "    \"multisampling\": true,\n";
     out << "    \"softer_directional_light\": true,\n";
     out << "    \"denoiser\": \"gpu_atrous_lobe_aware\",\n";
-    out << "    \"firefly_clamping\": true\n";
+    out << "    \"firefly_clamping\": true,\n";
+    out << "    \"tone_controls\": true\n";
     out << "  }\n";
     out << "}\n";
     return out.str();

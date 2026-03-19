@@ -36,6 +36,10 @@ static bool parseArgs(int argc, char** argv, RenderOptions& cfg) {
             const char* value = requireValue("--output");
             if (!value) return false;
             cfg.output = value;
+        } else if (arg == "--tonemap") {
+            const char* value = requireValue("--tonemap");
+            if (!value) return false;
+            cfg.tonemap = value;
         } else if (arg == "--environment-map") {
             const char* value = requireValue("--environment-map");
             if (!value) return false;
@@ -52,6 +56,22 @@ static bool parseArgs(int argc, char** argv, RenderOptions& cfg) {
             const char* value = requireValue("--denoise-strength");
             if (!value) return false;
             cfg.denoise_strength = std::stof(value);
+        } else if (arg == "--display-exposure") {
+            const char* value = requireValue("--display-exposure");
+            if (!value) return false;
+            cfg.display_exposure = std::stof(value);
+        } else if (arg == "--tone-contrast") {
+            const char* value = requireValue("--tone-contrast");
+            if (!value) return false;
+            cfg.tone_contrast = std::stof(value);
+        } else if (arg == "--tone-saturation") {
+            const char* value = requireValue("--tone-saturation");
+            if (!value) return false;
+            cfg.tone_saturation = std::stof(value);
+        } else if (arg == "--output-gamma") {
+            const char* value = requireValue("--output-gamma");
+            if (!value) return false;
+            cfg.output_gamma = std::stof(value);
         } else if (arg == "--adaptive-threshold") {
             const char* value = requireValue("--adaptive-threshold");
             if (!value) return false;
@@ -75,7 +95,7 @@ static bool parseArgs(int argc, char** argv, RenderOptions& cfg) {
         } else if (arg == "--print-scene-registry") {
             cfg.print_scene_registry = true;
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: sr_rt_gpu [--scene name] [--width N] [--height N] [--spp N] [--adaptive-sampling] [--adaptive-min-spp N] [--adaptive-threshold V] [--environment-map path] [--environment-rotation deg] [--environment-exposure V] [--output path] [--firefly-clamp V] [--denoise-strength V] [--no-denoise] [--save-guide-buffers] [--print-options-schema] [--print-scene-registry]\n";
+            std::cout << "Usage: sr_rt_gpu [--scene name] [--width N] [--height N] [--spp N] [--adaptive-sampling] [--adaptive-min-spp N] [--adaptive-threshold V] [--environment-map path] [--environment-rotation deg] [--environment-exposure V] [--tonemap filmic|reinhard|linear] [--display-exposure V] [--tone-contrast V] [--tone-saturation V] [--output-gamma V] [--output path] [--firefly-clamp V] [--denoise-strength V] [--no-denoise] [--save-guide-buffers] [--print-options-schema] [--print-scene-registry]\n";
             return false;
         } else {
             std::cerr << "Unknown argument: " << arg << "\n";
@@ -130,5 +150,10 @@ int main(int argc, char** argv) {
                   << " rotation=" << cfg.environment_rotation
                   << " exposure=" << cfg.environment_exposure << "\n";
     }
+    std::cout << "Tonemap: " << cfg.tonemap
+              << " display_exposure=" << cfg.display_exposure
+              << " contrast=" << cfg.tone_contrast
+              << " saturation=" << cfg.tone_saturation
+              << " gamma=" << cfg.output_gamma << "\n";
     return 0;
 }
